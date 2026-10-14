@@ -60,8 +60,10 @@ export class WebhookSignatureError extends Error {
 export class StripeGateway implements PaymentGateway {
   private stripe: Stripe;
   constructor(secretKey: string, private webhookSecret: string, private hash: (s: string) => string) {
-    this.stripe = new Stripe(secretKey, { apiVersion: '2026-09-30.clover' as Stripe.LatestApiVersion, maxNetworkRetries: 2, timeout: 8000 });
+    // No apiVersion override: the SDK pins the API version it was built for.
+    this.stripe = new Stripe(secretKey, { maxNetworkRetries: 2, timeout: 8000 });
   }
+
 
   async verifyPrice(priceId: string, expected: { amountMinor: number; currency: string }) {
     const price = await this.stripe.prices.retrieve(priceId);

@@ -113,7 +113,7 @@ Environment variables (Site configuration → Environment variables). Use
 | Variable | Notes |
 | --- | --- |
 | `VITE_DEMO_MODE` | must be `false` in production; the build fails otherwise |
-| `APP_URL` | public origin, e.g. `https://ideas.example.com` |
+| `APP_URL` | public origin, e.g. `https://ideas.example.com`. Scope it per deploy context; unset, the code uses `DEPLOY_PRIME_URL` (this deploy) then `URL` (production) |
 | `IP_HASH_SALT`, `WORKER_SECRET` | random; worker secret ≥ 32 chars |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | server only |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID` | |
@@ -124,10 +124,12 @@ Optional: `EMAIL_REPLY_TO`, `OWNER_ALERT_EMAIL`, `ANTHROPIC_MODEL`,
 `REPORT_ACCESS_DAYS` (90), `TOKEN_TTL_DAYS` (30), `RECOVERY_TOKEN_TTL_DAYS` (7).
 
 Background functions and scheduled functions need a Netlify plan that
-includes them. Check `GET /api/health` after deploying: it lists which
-configuration groups are present (names only). Any endpoint that lacks its
-configuration returns `503 { error: "not_configured", missing: [...] }`
-instead of pretending to work.
+includes them. Check `GET /api/health` after deploying: it reports which
+configuration groups are present (variable names only). It does **not** call
+Supabase, Stripe, Anthropic or Resend, so `ready: true` means "configured",
+not "connected"; the end-to-end test below is what proves connectivity. Any
+endpoint that lacks its configuration returns
+`503 { error: "not_configured", missing: [...] }` instead of pretending to work.
 
 Runtime limits this design respects (verify against Netlify's current docs
 before changing stage boundaries): synchronous functions must answer quickly

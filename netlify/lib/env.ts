@@ -108,7 +108,11 @@ export function loadEnv(groups: EnvGroup[], src: Source = process.env): Env {
     throw new ConfigError(['WORKER_SECRET'], 'WORKER_SECRET must be at least 32 characters (use `openssl rand -hex 32`).');
   }
 
-  const appUrl = (read(src, 'APP_URL') ?? read(src, 'URL') ?? 'http://localhost:8888').replace(/\/+$/, '');
+  // Public origin for emails, Stripe redirects and worker invocation.
+  // APP_URL wins. Otherwise Netlify's DEPLOY_PRIME_URL points at *this*
+  // deploy (branch or preview subdomain), whereas URL is always the
+  // production site, so a test deploy must not fall back to URL first.
+  const appUrl = (read(src, 'APP_URL') ?? read(src, 'DEPLOY_PRIME_URL') ?? read(src, 'URL') ?? 'http://localhost:8888').replace(/\/+$/, '');
 
   return {
     context,
