@@ -1,4 +1,4 @@
-import { CURRENCIES, MARKETS } from '@/config/product';
+import { CURRENCIES, MARKETS } from '../config/product';
 import { asString, isExistingBusiness } from './helpers';
 import type { Answers, Step } from './types';
 

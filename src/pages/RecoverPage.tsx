@@ -4,7 +4,8 @@ import { DemoBadge } from '@/components/DemoBadge';
 import { describedBy, FieldShell } from '@/components/fields';
 import { Notice } from '@/components/Notice';
 import { usePageTitle } from '@/components/usePageTitle';
-import { COMPANY, DEMO_MODE } from '@/config/product';
+import { COMPANY } from '@/config/product';
+import { DEMO_MODE } from '@/config/runtime';
 import { requestRecoveryLink } from '@/lib/api';
 import { isValidEmail } from '@/questionnaire/helpers';
 

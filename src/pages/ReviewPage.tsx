@@ -5,7 +5,8 @@ import { DemoBadge } from '@/components/DemoBadge';
 import { ConfirmEmailInput } from '@/components/fields';
 import { Notice } from '@/components/Notice';
 import { usePageTitle } from '@/components/usePageTitle';
-import { currencySymbol, DEMO_MODE, PRICE } from '@/config/product';
+import { currencySymbol, PRICE } from '@/config/product';
+import { DEMO_MODE } from '@/config/runtime';
 import { createCheckout } from '@/lib/api';
 import { asArray, asBool, asEstimate, asString, formatNumber, parseNumberInput } from '@/questionnaire/helpers';
 import { optionLabel, STEPS, visibleFields } from '@/questionnaire/schema';
@@ -80,6 +81,11 @@ export function ReviewPage() {
     setSubmitting(true);
     try {
       const session = await createCheckout(answers);
+      if (/^https?:\/\//.test(session.checkoutUrl)) {
+        // Hosted checkout (live mode): leave the app.
+        window.location.assign(session.checkoutUrl);
+        return;
+      }
       navigate(session.checkoutUrl);
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : 'Something went wrong. Please try again.');

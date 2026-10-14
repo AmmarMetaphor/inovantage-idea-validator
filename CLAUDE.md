@@ -26,8 +26,9 @@ downloadable PDF. No customer account exists or is planned.
 | `/`                    | `LandingPage`             | Branded landing page, pricing, FAQ           |
 | `/validate/:step`      | `QuestionnairePage`       | Six-step questionnaire (1–6)                 |
 | `/review`              | `ReviewPage`              | Answer review, email confirmation, checkout start |
-| `/checkout`            | `CheckoutPage`            | Checkout handoff / simulated checkout        |
-| `/report/:reportId`    | `ReportStatusPage`        | Processing status and PDF download           |
+| `/checkout`            | `CheckoutPage`            | Simulated checkout (demo) / cancelled return |
+| `/checkout/return`     | `CheckoutReturnPage`      | Live return from Stripe; polls server verification |
+| `/report/:token`       | `ReportStatusPage`        | Processing status and PDF download (token-gated) |
 | `/sample-report`       | `SampleReportPage`        | Illustrative sample report                   |
 | `/find-report`         | `RecoverPage`             | Report-link recovery by email                |
 | `/terms` `/privacy` `/refunds` | `legal/*`         | Draft legal pages, marked for owner review   |
@@ -63,7 +64,9 @@ Rules:
   `VITE_DRAFT_STORAGE=session`; it uses `sessionStorage` for the current tab.
 - After a simulated payment the demo keeps only a report reference, a masked
   email and timestamps in `sessionStorage`, never the answers.
-- No analytics, tracking or third-party scripts are loaded.
+- No analytics, tracking or third-party scripts are loaded. The page sets
+  `referrer: no-referrer`, and `/report/*` and `/checkout/*` are served
+  `noindex` + `no-store` so private links never leak.
 
 ## Demo mode
 
@@ -110,18 +113,48 @@ content must be labelled as demo or illustrative in the UI.
 ## Tech
 
 - React 19, TypeScript (strict), Vite 7, React Router 7. No UI framework.
-- Path alias `@/` → `src/`.
-- `npm run build` runs `tsc -b` then `vite build`; both must pass before commit.
-- Netlify: `netlify.toml` builds to `dist`, rewrites `/api/*` to
-  `/.netlify/functions/*` and falls back to `index.html` for SPA routes.
-  Functions are not implemented yet; see `netlify/functions/README.md`.
+- Path alias `@/` → `src/` in the frontend only. Files the server also
+  imports (`src/config/product.ts`, `src/questionnaire/*.ts`) must use
+  relative imports and must not touch `import.meta.env`; browser flags live
+  in `src/config/runtime.ts`.
+- `npm run build` runs the build guard, `tsc -b` (app, node, server and
+  tests) then `vite build`. `npm test` runs Vitest. All must pass before commit.
 - Secrets never go in the repo. `.env.example` holds placeholders only; any
   `VITE_` variable is public in the bundle.
 
-## What remains simulated (backend not built)
+## Backend (Netlify Functions + Supabase + Stripe + Anthropic + Resend)
 
-- Payment (Stripe or similar) and the create-checkout function.
-- Report research, generation, PDF rendering and storage.
-- Email sending (confirmation, report delivery, link recovery).
-- Report status lookup from a real data store.
+Read `docs/BACKEND.md` before touching `netlify/` or `supabase/`.
+
+- **Layout.** `netlify/functions/*.ts` are thin entry points. All logic is in
+  `netlify/lib/`: `handlers/` (pure functions over a `Deps` object), `db/`
+  (`types.ts` interface, `supabase.ts` production, `memory.ts` tests),
+  `payments.ts` (Stripe), `mailer.ts` (Resend), `research.ts` (Anthropic +
+  stub), `pdf.ts`, `jobs.ts` (runner), `fulfil.ts` (payment verification).
+- **Trust boundaries.** The browser never gets a Supabase key, never sets a
+  price, and never triggers generation. Only a verified Stripe session
+  (webhook, or server-side retrieval on return) can mark an order paid, and
+  that path creates the job row before acknowledging. All customer-facing
+  reads require a 256-bit access token (stored hashed, expiring) sent in a
+  POST body.
+- **Jobs.** `claim_job` is atomic; stages `confirm → research → compose →
+  render → deliver` are idempotent and checkpointed; retries are bounded
+  with backoff; the scheduled dispatcher recovers expired leases. A change
+  to a stage must keep it safe to re-run.
+- **Migrations.** Add a new file under `supabase/migrations/` with the next
+  timestamp; never edit an applied one. Every new table gets RLS enabled and
+  forced with no policies, and grants revoked from `anon`/`authenticated`.
+- **Config.** All env reads go through `netlify/lib/env.ts`. Missing values
+  throw `ConfigError` → HTTP 503 listing variable names (never values).
+  `REPORT_GENERATOR=stub` and demo mode are refused in production.
+- **Logging.** Use the logger in `netlify/lib/log.ts`; never `console.log`
+  customer data. Tokens, emails, answers and report text are redacted by key.
+- **Tests.** `tests/` cover forged/duplicate/concurrent payment events,
+  unpaid and cross-customer access, link recovery, interrupted jobs and
+  bounded retries. Add a test for every new trust boundary.
+
+## What remains for the owner
+
+- Apply the migrations, create the Stripe product and webhook, set the
+  environment variables, and switch `VITE_DEMO_MODE=false` in production.
 - Legal review of terms, privacy and refund pages; final brand assets.

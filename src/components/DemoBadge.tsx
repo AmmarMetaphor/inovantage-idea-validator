@@ -1,4 +1,4 @@
-import { DEMO_MODE } from '@/config/product';
+import { DEMO_MODE } from '@/config/runtime';
 
 /** Small inline pill marking simulated behaviour. Renders nothing outside demo mode. */
 export function DemoBadge({ label = 'Demo mode' }: { label?: string }) {

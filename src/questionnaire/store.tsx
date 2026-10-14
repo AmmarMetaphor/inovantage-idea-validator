@@ -7,7 +7,7 @@ import {
   useReducer,
   type ReactNode,
 } from 'react';
-import { DRAFT_STORAGE } from '@/config/product';
+import { DRAFT_STORAGE } from '@/config/runtime';
 import type { Answers, AnswerValue } from './types';
 
 /*

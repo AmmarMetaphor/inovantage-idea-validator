@@ -3,25 +3,36 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Inovantage Idea Validator — frontend for a pay-once, evidence-based business idea feasibility report.",
+  "description": "Inovantage Idea Validator \u2014 frontend for a pay-once, evidence-based business idea feasibility report.",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "node scripts/check-build-env.mjs && tsc -b && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.133.0",
+    "@supabase/supabase-js": "^2.117.3",
+    "pdfkit": "^0.17.2",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "react-router-dom": "^7.9.0"
+    "react-router-dom": "^7.9.0",
+    "resend": "^6.32.1",
+    "stripe": "^20.4.1",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@netlify/functions": "^6.0.2",
     "@types/node": "^22.20.5",
+    "@types/pdfkit": "^0.17.6",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^5.0.0",
     "typescript": "~5.9.3",
-    "vite": "^7.1.0"
+    "vite": "^7.1.0",
+    "vitest": "^5.0.4"
   },
   "engines": {
     "node": ">=20"

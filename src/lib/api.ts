@@ -1,60 +1,76 @@
 /*
   API client. In demo mode every call is simulated in the browser and clearly
   labelled as such in the UI. Outside demo mode the same functions call the
-  Netlify Functions listed in netlify/functions/README.md, which do not exist
-  yet; they will fail with a clear error until the backend is built.
+  Netlify Functions under /api (see docs/BACKEND.md). Report access uses an
+  unguessable token from the email link; it is sent in a POST body, never in
+  a query string, so it does not land in server access logs.
 */
-import { DEMO_MODE } from '@/config/product';
+import { DEMO_MODE } from '@/config/runtime';
 import type { Answers } from '@/questionnaire/types';
 import { maskEmail } from '@/questionnaire/helpers';
 
-export type ReportStage = 'received' | 'paid' | 'researching' | 'compiling' | 'ready' | 'failed';
+export type ReportStage = 'received' | 'paid' | 'researching' | 'compiling' | 'ready' | 'failed' | 'expired';
 
 export interface ReportStatus {
-  reportId: string;
+  reportRef: string;
   stage: ReportStage;
-  /** Masked email the report will be / was sent to. */
   emailMasked: string;
-  createdAt: string;
-  /** Present only when stage === 'ready'. */
-  pdfUrl?: string;
-  /** True when this status came from the demo simulator. */
+  orderedAt: string;
+  expiresAt: string | null;
+  pdfAvailable: boolean;
   demo: boolean;
 }
 
 export interface CheckoutSession {
-  reportId: string;
-  /** Where to send the customer to pay. In demo mode this is an internal route. */
+  reportRef: string;
+  /** Internal route (demo) or an absolute hosted checkout URL (live). */
   checkoutUrl: string;
   demo: boolean;
 }
 
-class ApiError extends Error {
+export type CheckoutResult =
+  | { state: 'pending' }
+  | { state: 'paid'; reportPath: string | null; message?: string }
+  | { state: 'expired' | 'failed' | 'rejected' };
+
+export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  code: string;
+  details?: unknown;
+  constructor(message: string, status: number, code = 'error', details?: unknown) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.code = code;
+    this.details = details;
   }
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    referrerPolicy: 'no-referrer',
     ...init,
   });
-  if (!res.ok) {
-    throw new ApiError(
-      `The service responded with ${res.status}. The backend for this action is not connected yet.`,
-      res.status,
-    );
+  let body: { error?: string; message?: string; details?: unknown; missing?: string[] } = {};
+  try {
+    body = (await res.json()) as typeof body;
+  } catch {
+    /* non-JSON */
   }
-  return (await res.json()) as T;
+  if (!res.ok) {
+    const message =
+      body.error === 'not_configured'
+        ? `This site is not fully set up yet (missing: ${(body.missing ?? []).join(', ')}). Please contact the site owner.`
+        : (body.message ?? `The service responded with ${res.status}.`);
+    throw new ApiError(message, res.status, body.error ?? 'error', body.details);
+  }
+  return body as T;
 }
 
 /* ---------------------------------------------------------------------------
    Demo simulator: sessionStorage holds a tiny, non-sensitive order record
-   (report id, masked email, timestamps) so the status page survives refresh.
+   (report ref, masked email, timestamps) so the status page survives refresh.
    Questionnaire answers are never written here.
 --------------------------------------------------------------------------- */
 
@@ -97,7 +113,6 @@ function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-/** Timeline (seconds after payment) that the demo status page walks through. */
 const DEMO_STAGE_SECONDS: { stage: ReportStage; after: number }[] = [
   { stage: 'paid', after: 0 },
   { stage: 'researching', after: 6 },
@@ -113,6 +128,10 @@ function demoStageFor(order: DemoOrder): ReportStage {
   return stage;
 }
 
+export function isDemoReference(ref: string): boolean {
+  return ref.startsWith('DEMO-');
+}
+
 /* ---------------------------------------------------------------------------
    Public API
 --------------------------------------------------------------------------- */
@@ -125,12 +144,17 @@ export async function createCheckout(answers: Answers): Promise<CheckoutSession>
     const orders = readDemoOrders();
     orders[reportId] = { reportId, emailMasked: maskEmail(email), createdAt: new Date().toISOString() };
     writeDemoOrders(orders);
-    return { reportId, checkoutUrl: `/checkout?report=${reportId}`, demo: true };
+    return { reportRef: reportId, checkoutUrl: `/checkout?report=${reportId}`, demo: true };
   }
-  return request<CheckoutSession>('/api/create-checkout', {
+  const { submissionId } = await request<{ submissionId: string }>('/api/create-submission', {
     method: 'POST',
-    body: JSON.stringify({ answers }),
+    body: JSON.stringify({ answers, website: '' }),
   });
+  const session = await request<{ checkoutUrl: string; orderRef: string }>('/api/create-checkout', {
+    method: 'POST',
+    body: JSON.stringify({ submissionId }),
+  });
+  return { reportRef: session.orderRef, checkoutUrl: session.checkoutUrl, demo: false };
 }
 
 /** Demo only: mark a simulated order as paid. */
@@ -143,27 +167,28 @@ export async function demoCompletePayment(reportId: string): Promise<void> {
   writeDemoOrders(orders);
 }
 
-export async function getReportStatus(reportId: string): Promise<ReportStatus> {
-  if (DEMO_MODE) {
+/** Live only: ask the server whether a checkout session has been paid and fulfilled. */
+export async function getCheckoutResult(sessionId: string): Promise<CheckoutResult> {
+  return request<CheckoutResult>(`/api/checkout-result?session_id=${encodeURIComponent(sessionId)}`, { method: 'GET' });
+}
+
+export async function getReportStatus(tokenOrDemoRef: string): Promise<ReportStatus> {
+  if (DEMO_MODE && isDemoReference(tokenOrDemoRef)) {
     await sleep(400);
-    const order = readDemoOrders()[reportId];
+    const order = readDemoOrders()[tokenOrDemoRef];
     if (!order) {
-      throw new ApiError(
-        'No demo report with that reference exists in this browser tab. Demo reports are not stored anywhere else.',
-        404,
-      );
+      throw new ApiError('No demo report with that reference exists in this browser tab. Demo reports are not stored anywhere else.', 404);
     }
     const stage = demoStageFor(order);
-    return {
-      reportId,
-      stage,
-      emailMasked: order.emailMasked,
-      createdAt: order.createdAt,
-      pdfUrl: stage === 'ready' ? '#demo-pdf-not-generated' : undefined,
-      demo: true,
-    };
+    return { reportRef: tokenOrDemoRef, stage, emailMasked: order.emailMasked, orderedAt: order.createdAt, expiresAt: null, pdfAvailable: false, demo: true };
   }
-  return request<ReportStatus>(`/api/report-status?id=${encodeURIComponent(reportId)}`);
+  const s = await request<Omit<ReportStatus, 'demo'>>('/api/report-status', { method: 'POST', body: JSON.stringify({ token: tokenOrDemoRef }) });
+  return { ...s, demo: false };
+}
+
+/** Live only: returns a short-lived signed URL for the PDF. */
+export async function getReportDownloadUrl(token: string): Promise<{ url: string; expiresInSeconds: number }> {
+  return request('/api/report-download', { method: 'POST', body: JSON.stringify({ token }) });
 }
 
 export async function requestRecoveryLink(email: string): Promise<{ ok: true; demo: boolean }> {
@@ -171,11 +196,6 @@ export async function requestRecoveryLink(email: string): Promise<{ ok: true; de
     await sleep(800);
     return { ok: true, demo: true };
   }
-  await request<unknown>('/api/recover-report', {
-    method: 'POST',
-    body: JSON.stringify({ email }),
-  });
+  await request<unknown>('/api/recover-report', { method: 'POST', body: JSON.stringify({ email }) });
   return { ok: true, demo: false };
 }
-
-export { ApiError };

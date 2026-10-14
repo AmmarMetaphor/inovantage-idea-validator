@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
+import { Button } from '@/components/Button';
 import { DemoBadge } from '@/components/DemoBadge';
 import { Notice } from '@/components/Notice';
 import { usePageTitle } from '@/components/usePageTitle';
-import { COMPANY, DEMO_MODE, TURNAROUND } from '@/config/product';
-import { getReportStatus, type ReportStage, type ReportStatus } from '@/lib/api';
+import { COMPANY, TURNAROUND } from '@/config/product';
+import { DEMO_MODE } from '@/config/runtime';
+import { getReportDownloadUrl, getReportStatus, isDemoReference, type ReportStage, type ReportStatus } from '@/lib/api';
 
 const STAGES: { stage: ReportStage; title: string; desc: string }[] = [
   { stage: 'paid', title: 'Payment confirmed', desc: 'Your order is in the queue.' },
@@ -19,13 +21,21 @@ function stageRank(stage: ReportStage) {
   return ORDER.indexOf(stage);
 }
 
+/**
+ * /report/:token — the token is the private access key from the customer's
+ * email (or the demo reference in demo mode). It is sent to the API in a POST
+ * body and never appears in a query string or Referer header.
+ */
 export function ReportStatusPage() {
   usePageTitle('Report status');
-  const { reportId = '' } = useParams();
+  const { token = '' } = useParams();
   const [params] = useSearchParams();
   const justPaid = params.get('paid') === '1';
   const [status, setStatus] = useState<ReportStatus | null>(null);
   const [error, setError] = useState<string>();
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string>();
+  const demoRef = DEMO_MODE && isDemoReference(token);
 
   useEffect(() => {
     let cancelled = false;
@@ -33,12 +43,12 @@ export function ReportStatusPage() {
 
     const poll = async () => {
       try {
-        const s = await getReportStatus(reportId);
+        const s = await getReportStatus(token);
         if (cancelled) return;
         setStatus(s);
         setError(undefined);
-        if (s.stage !== 'ready' && s.stage !== 'failed') {
-          timer = window.setTimeout(poll, DEMO_MODE ? 2500 : 15000);
+        if (s.stage !== 'ready' && s.stage !== 'failed' && s.stage !== 'expired') {
+          timer = window.setTimeout(poll, s.demo ? 2500 : 20000);
         }
       } catch (err) {
         if (cancelled) return;
@@ -51,29 +61,51 @@ export function ReportStatusPage() {
       cancelled = true;
       if (timer) window.clearTimeout(timer);
     };
-  }, [reportId]);
+  }, [token]);
+
+  const download = async () => {
+    setDownloading(true);
+    setDownloadError(undefined);
+    try {
+      const { url } = await getReportDownloadUrl(token);
+      window.location.assign(url);
+    } catch (err) {
+      setDownloadError(err instanceof Error ? err.message : 'Could not prepare the download.');
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   const rank = status ? stageRank(status.stage) : -1;
+  const title =
+    status?.stage === 'ready'
+      ? 'Your report is ready'
+      : status?.stage === 'failed'
+        ? 'We hit a problem with your report'
+        : status?.stage === 'expired'
+          ? 'This report link has expired'
+          : 'We are working on your report';
 
   return (
     <div className="container container--form form-page page-enter">
       <div className="form-page__head">
         <span className="eyebrow">
-          Report status <DemoBadge />
+          Report status {demoRef && <DemoBadge />}
         </span>
-        <h1>{status?.stage === 'ready' ? 'Your report is ready' : 'We are working on your report'}</h1>
-        <p>
-          Reference <span className="code">{reportId}</span>. Keep this page or the email we sent; both
-          bring you back here.
-        </p>
+        <h1>{title}</h1>
+        {status && (
+          <p>
+            Reference <span className="code">{status.reportRef}</span>. Keep the email we sent; its link
+            brings you back here.
+          </p>
+        )}
       </div>
 
-      {justPaid && !error && (
+      {justPaid && !error && status && status.stage !== 'expired' && (
         <Notice tone="success" title="Thank you — your order is confirmed" role="status">
           <p>
-            A confirmation email {DEMO_MODE ? 'would be' : 'has been'} sent to{' '}
-            <strong>{status?.emailMasked ?? 'your address'}</strong>. Your report will follow{' '}
-            {TURNAROUND.label}.
+            A confirmation email {status.demo ? 'would be' : 'has been'} sent to <strong>{status.emailMasked}</strong>.
+            Your report will follow {TURNAROUND.label}.
           </p>
         </Notice>
       )}
@@ -94,7 +126,23 @@ export function ReportStatusPage() {
         </p>
       )}
 
-      {status && (
+      {status && status.stage === 'expired' && (
+        <Notice tone="warning" title="Access period ended">
+          <p>Reports stay available for a limited time after delivery. Contact {COMPANY.supportEmail} if you need a copy.</p>
+        </Notice>
+      )}
+
+      {status && status.stage === 'failed' && (
+        <Notice tone="danger" title="Report generation did not complete" role="alert">
+          <p>
+            Something went wrong on our side. We have been notified and will contact you at{' '}
+            {status.emailMasked}. No action is needed from you. If you do not hear from us, email{' '}
+            {COMPANY.supportEmail} quoting {status.reportRef}.
+          </p>
+        </Notice>
+      )}
+
+      {status && status.stage !== 'expired' && status.stage !== 'failed' && (
         <div className="card stack" style={{ marginTop: 'var(--space-6)' }}>
           <ol className="timeline" aria-label="Report progress">
             {STAGES.map((s, i) => {
@@ -126,23 +174,40 @@ export function ReportStatusPage() {
                 <Notice tone="warning" title="Demo mode: no PDF was generated" role="note">
                   <p>
                     In the live product a “Download PDF” button appears here and the same file is
-                    attached to the email. Report generation is not connected in this build, so there
-                    is nothing to download.
+                    attached to the email. Report generation is simulated in this build, so there is
+                    nothing to download.
                   </p>
                   <p>
                     <Link to="/sample-report">See the illustrative sample report</Link> for the format.
                   </p>
                 </Notice>
+              ) : status.pdfAvailable ? (
+                <>
+                  <Button size="lg" onClick={download} disabled={downloading}>
+                    {downloading ? (
+                      <>
+                        <span className="spinner" aria-hidden="true" /> Preparing download…
+                      </>
+                    ) : (
+                      'Download PDF'
+                    )}
+                  </Button>
+                  {downloadError && (
+                    <Notice tone="danger" role="alert">
+                      <p>{downloadError}</p>
+                    </Notice>
+                  )}
+                  <p className="small muted">The download link is private and valid for two minutes.</p>
+                </>
               ) : (
-                <a href={status.pdfUrl} className="btn btn--primary btn--lg" download>
-                  Download PDF
-                </a>
+                <p className="muted">The PDF is being finalised. Check your email shortly.</p>
               )}
             </div>
           )}
 
           <p className="small muted">
-            Sent to {status.emailMasked}. Ordered {new Date(status.createdAt).toLocaleString('en-GB')}.
+            Sent to {status.emailMasked}. Ordered {new Date(status.orderedAt).toLocaleString('en-GB')}.
+            {status.expiresAt && ` Available until ${new Date(status.expiresAt).toLocaleDateString('en-GB')}.`}
             {status.demo && ' This demo order exists only in this browser tab.'}
           </p>
         </div>

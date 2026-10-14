@@ -48,13 +48,21 @@ export function currencySymbol(code: CurrencyCode | string | undefined): string 
   return CURRENCIES.find((c) => c.code === code)?.symbol ?? '';
 }
 
-/** Working price. Charged once per report, in GBP for all markets for now. */
+/**
+ * Working price. Charged once per report, in GBP for all markets for now.
+ * The server verifies every payment against amountMinor/currency, so change
+ * both here and the Stripe Price together.
+ */
 export const PRICE = {
   amount: 24,
+  amountMinor: 2400,
   currency: 'GBP' as CurrencyCode,
   display: '£24',
   note: 'One report. One idea. One primary market. No subscription, no account.',
 };
+
+/** How long a paid report stays retrievable (status page, download, recovery). */
+export const REPORT_ACCESS_DAYS = 90;
 
 /** Target turnaround communicated to customers. Keep in sync with copy. */
 export const TURNAROUND = {
@@ -66,19 +74,3 @@ export const COMPANY = {
   productName: 'Idea Validator',
   supportEmail: 'support@example.com', // placeholder until the real inbox exists
 };
-
-/**
- * Demo mode: simulated checkout and report processing, no backend required.
- * Anything other than the literal string "false" keeps demo mode ON so a
- * fresh clone previews safely.
- */
-export const DEMO_MODE: boolean = import.meta.env.VITE_DEMO_MODE !== 'false';
-
-/**
- * Draft persistence for questionnaire answers.
- * "none" (default): answers live in memory only and vanish on refresh.
- * "session": answers are kept in sessionStorage for this tab only.
- * localStorage is deliberately not an option.
- */
-export const DRAFT_STORAGE: 'none' | 'session' =
-  import.meta.env.VITE_DRAFT_STORAGE === 'session' ? 'session' : 'none';

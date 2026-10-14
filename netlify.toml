@@ -11,6 +11,10 @@
 
 [functions]
   node_bundler = "esbuild"
+  # pdfkit loads its font metrics from disk at runtime; keep it unbundled so
+  # the files ship alongside the function.
+  external_node_modules = ["pdfkit"]
+  included_files = ["node_modules/pdfkit/js/data/**"]
 
 # Local development with `netlify dev` (optional). The Vite dev server proxies
 # /api/* to port 8888, so either `npm run dev` or `netlify dev` works.
@@ -43,6 +47,27 @@
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
     Permissions-Policy = "camera=(), microphone=(), geolocation=()"
+
+# Private routes: no indexing, no referrer leakage, no caching.
+[[headers]]
+  for = "/report/*"
+  [headers.values]
+    X-Robots-Tag = "noindex, nofollow, noarchive"
+    Referrer-Policy = "no-referrer"
+    Cache-Control = "no-store"
+
+[[headers]]
+  for = "/checkout/*"
+  [headers.values]
+    X-Robots-Tag = "noindex, nofollow, noarchive"
+    Referrer-Policy = "no-referrer"
+    Cache-Control = "no-store"
+
+[[headers]]
+  for = "/api/*"
+  [headers.values]
+    X-Robots-Tag = "noindex"
+    Cache-Control = "no-store"
 
 [[headers]]
   for = "/assets/*"

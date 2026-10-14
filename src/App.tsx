@@ -1,6 +1,7 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { Layout } from '@/components/Layout';
 import { CheckoutPage } from '@/pages/CheckoutPage';
+import { CheckoutReturnPage } from '@/pages/CheckoutReturnPage';
 import { LandingPage } from '@/pages/LandingPage';
 import { PrivacyPage } from '@/pages/legal/PrivacyPage';
 import { RefundsPage } from '@/pages/legal/RefundsPage';
@@ -24,7 +25,8 @@ export function App() {
             <Route path="validate/:step" element={<QuestionnairePage />} />
             <Route path="review" element={<ReviewPage />} />
             <Route path="checkout" element={<CheckoutPage />} />
-            <Route path="report/:reportId" element={<ReportStatusPage />} />
+            <Route path="checkout/return" element={<CheckoutReturnPage />} />
+            <Route path="report/:token" element={<ReportStatusPage />} />
             <Route path="sample-report" element={<SampleReportPage />} />
             <Route path="find-report" element={<RecoverPage />} />
             <Route path="terms" element={<TermsPage />} />

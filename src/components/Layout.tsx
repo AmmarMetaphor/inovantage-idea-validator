@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
-import { COMPANY, DEMO_MODE, PRICE } from '@/config/product';
+import { COMPANY, PRICE } from '@/config/product';
+import { DEMO_MODE } from '@/config/runtime';
 
 function Wordmark() {
   return (

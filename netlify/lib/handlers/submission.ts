@@ -1,0 +1,97 @@
+import { PRICE } from '../../../src/config/product';
+import { hashIp, normaliseEmail, sha256Hex, shortRef } from '../crypto';
+import type { Deps } from '../deps';
+import { clientIp, HttpError, isObject, json, readJson, requireMethod } from '../http';
+import { MAX_BODY_BYTES, validateSubmission } from '../validation';
+import { enforceRateLimit } from './ratelimit';
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CHECKOUT_TTL_SECONDS = 30 * 60;
+const SUBMISSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** POST /api/create-submission  { answers, website? } → { submissionId } */
+export async function createSubmission(req: Request, deps: Deps, contextIp?: string): Promise<Response> {
+  requireMethod(req, 'POST');
+  const ip = hashIp(clientIp(req, contextIp), deps.env.ipHashSalt);
+  await enforceRateLimit(deps, `submission:${ip}`, 10, 3600);
+
+  const body = await readJson<unknown>(req, MAX_BODY_BYTES);
+  if (!isObject(body)) throw new HttpError(400, 'invalid_body');
+  // Honeypot: real browsers leave this empty. Bots that fill it get a
+  // plausible-looking failure rather than a hint.
+  if (typeof body.website === 'string' && body.website.trim() !== '') {
+    throw new HttpError(400, 'validation_failed', 'Please check your answers.', { errors: {} });
+  }
+
+  const result = validateSubmission(body.answers);
+  if (!result.ok) throw new HttpError(400, 'validation_failed', 'Some answers are missing or invalid.', { errors: result.errors });
+
+  const v = result.value;
+  const submission = await deps.db.createSubmission({
+    email: v.email,
+    email_normalised: normaliseEmail(v.email),
+    market: v.market,
+    currency: v.currency,
+    idea_name: v.ideaName,
+    answers: v.answers,
+    ip_hash: ip,
+    user_agent_hash: sha256Hex(req.headers.get('user-agent') ?? '').slice(0, 32),
+  });
+  deps.log.info('submission.created', { submission_id: submission.id, market: v.market });
+  return json({ submissionId: submission.id }, 201);
+}
+
+/** POST /api/create-checkout  { submissionId } → { checkoutUrl, orderRef } */
+export async function createCheckout(req: Request, deps: Deps, contextIp?: string): Promise<Response> {
+  requireMethod(req, 'POST');
+  const ip = hashIp(clientIp(req, contextIp), deps.env.ipHashSalt);
+  await enforceRateLimit(deps, `checkout:${ip}`, 10, 3600);
+
+  const body = await readJson<unknown>(req, 4096);
+  if (!isObject(body) || typeof body.submissionId !== 'string' || !UUID_RE.test(body.submissionId)) {
+    throw new HttpError(400, 'invalid_body', 'submissionId is required.');
+  }
+  // Anything price-related in the body is ignored on purpose: the server owns the price.
+
+  const submission = await deps.db.getSubmission(body.submissionId);
+  if (!submission) throw new HttpError(404, 'submission_not_found', 'That submission does not exist or has expired.');
+  if (submission.status === 'paid') throw new HttpError(409, 'already_paid', 'This submission has already been paid for.');
+  if (deps.now().getTime() - new Date(submission.created_at).getTime() > SUBMISSION_MAX_AGE_MS) {
+    throw new HttpError(410, 'submission_expired', 'That submission has expired. Please submit your answers again.');
+  }
+
+  const env = deps.env;
+  const payments = deps.payments; // validates Stripe configuration or throws a setup error
+  await payments.verifyPrice(env.stripePriceId, { amountMinor: PRICE.amountMinor, currency: PRICE.currency });
+
+  let order = await deps.db.getOrderBySubmission(submission.id);
+  if (order && order.status !== 'pending_payment' && order.status !== 'expired') {
+    throw new HttpError(409, 'order_not_pending', `This order is ${order.status}.`);
+  }
+  if (!order) {
+    order = await deps.db.createOrder({
+      submission_id: submission.id,
+      email: submission.email,
+      email_normalised: submission.email_normalised,
+      amount_minor: PRICE.amountMinor,
+      currency: PRICE.currency,
+      stripe_price_id: env.stripePriceId,
+    });
+  }
+
+  const nowUnix = Math.floor(deps.now().getTime() / 1000);
+  const session = await payments.createCheckoutSession({
+    priceId: env.stripePriceId,
+    orderId: order.id,
+    customerEmail: submission.email,
+    successUrl: `${env.appUrl}/checkout/return?session_id={CHECKOUT_SESSION_ID}`,
+    cancelUrl: `${env.appUrl}/checkout?status=cancelled`,
+    expiresAtUnix: nowUnix + CHECKOUT_TTL_SECONDS,
+    idempotencyKey: `checkout:${order.id}:${order.stripe_checkout_session_id ?? 'first'}`,
+  });
+  await deps.db.attachCheckoutSession(order.id, session.id, new Date(session.expiresAtUnix * 1000).toISOString());
+  if (order.status === 'expired') await deps.db.setOrderStatus(order.id, 'pending_payment');
+  await deps.db.setSubmissionStatus(submission.id, 'ordered');
+  deps.log.info('checkout.created', { order_id: order.id });
+  return json({ checkoutUrl: session.url, orderRef: shortRef(order.id) });
+}

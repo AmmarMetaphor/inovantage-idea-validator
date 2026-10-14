@@ -5,9 +5,11 @@ six-step questionnaire about their idea and circumstances, pays £24, and
 receives an evidence-based report by email with a PDF. No account required.
 Markets: UK, US and Australia.
 
-This is the **first frontend release**. Everything that needs a server
-(payment, research, PDF, email) is simulated in demo mode and clearly labelled.
-See "What is simulated" below.
+The frontend runs in a labelled **demo mode** out of the box (no backend
+needed). The real backend lives in `netlify/` (Netlify Functions), with
+Supabase for data and private PDF storage, Stripe Checkout for payment, the
+Anthropic API for research and composition, and Resend for email. Setting it
+up is documented step by step in [`docs/BACKEND.md`](docs/BACKEND.md).
 
 ## Preview it on your computer (beginner steps)
 
@@ -48,18 +50,22 @@ page progress. Nothing is charged, sent or stored anywhere but your browser tab.
 | `npm run dev`       | Local preview with hot reload                  |
 | `npm run build`     | Type-check and build the production site to `dist/` |
 | `npm run preview`   | Serve the built `dist/` folder locally         |
-| `npm run typecheck` | Type-check only                                |
+| `npm run typecheck` | Type-check frontend, functions and tests       |
+| `npm test`          | Run the backend security and pipeline tests    |
 
 ## Configuration
 
 Copy `.env.example` to `.env` to change settings locally. All values in the
-example file are placeholders; never commit real keys.
+example file are placeholders; never commit real keys. The file documents
+every variable; the two that matter for a local preview are:
 
-| Variable                       | Default | Meaning                                                   |
-| ------------------------------ | ------- | --------------------------------------------------------- |
-| `VITE_DEMO_MODE`               | `true`  | Simulate checkout and processing. Only `"false"` turns it off. |
-| `VITE_DRAFT_STORAGE`           | `none`  | `session` keeps questionnaire answers in this tab only. localStorage is never used. |
-| `VITE_STRIPE_PUBLISHABLE_KEY`  | placeholder | Public key for a future payment integration.          |
+| Variable             | Default | Meaning                                                   |
+| -------------------- | ------- | --------------------------------------------------------- |
+| `VITE_DEMO_MODE`     | `true`  | Simulate checkout and processing. Only `"false"` turns it off, and the production build refuses to run unless it is `false`. |
+| `VITE_DRAFT_STORAGE` | `none`  | `session` keeps questionnaire answers in this tab only. localStorage is never used. |
+
+Backend variables (Supabase, Stripe, Anthropic, Resend, worker secret) are
+server-side only and are listed in `.env.example` and `docs/BACKEND.md`.
 
 Product settings (price, markets, turnaround, support email) live in
 `src/config/product.ts`. Design tokens live in `src/styles/tokens.css`.
@@ -67,35 +73,49 @@ Product settings (price, markets, turnaround, support email) live in
 ## Deploying to Netlify
 
 `netlify.toml` is ready: build command `npm run build`, publish `dist`,
-`/api/*` rewritten to Netlify Functions, and an SPA fallback so deep links such
-as `/report/ABC123` work. Connect the repository in Netlify and it will build.
-Set environment variables in the Netlify UI, not in the repo.
+`/api/*` rewritten to Netlify Functions, private-route headers, and an SPA
+fallback so deep links such as `/report/<token>` work. Connect the repository
+in Netlify, set the environment variables in the Netlify UI (never in the
+repo), apply the Supabase migrations, and register the Stripe webhook at
+`https://<your-site>/api/stripe-webhook`. Full checklist: `docs/BACKEND.md`.
+
+Going live means setting `VITE_DEMO_MODE=false` in the production context.
+The build fails on purpose if that is missing, so demo mode can never face a
+paying customer.
 
 ## Project layout
 
 ```
 src/
   components/      Layout, buttons, notices, form field renderer, stepper
-  config/          product.ts (price, markets, flags)
-  lib/api.ts       API client; simulated in demo mode
+  config/          product.ts (price, markets), runtime.ts (browser flags)
+  lib/api.ts       API client; simulated in demo mode, live otherwise
   pages/           One file per route; legal/ holds the draft policies
   questionnaire/   schema (6 steps), validation, in-memory store, helpers
   styles/          tokens.css (design tokens), global, components, page styles
-netlify/functions/ Reserved for the backend; README lists planned functions
+netlify/
+  functions/       One file per endpoint (thin wrappers), worker, dispatcher
+  lib/             env, logging, db (Supabase + in-memory), payments, mailer,
+                   research (Anthropic + stub), pdf, jobs, fulfilment, handlers
+supabase/migrations/  Versioned SQL: schema, RLS lockdown, storage, functions
+tests/           Vitest suites for payment forgery, duplicates, access, jobs
+docs/BACKEND.md  Setup, environment variables, endpoints, operations
 ```
 
-## What is simulated (not yet built)
+## Demo mode versus live
 
-- **Payment.** The checkout page is a labelled simulation with "succeed" and
-  "cancel" buttons. No payment provider is connected.
-- **Report processing.** The status page advances on a timer in your browser.
-  No research happens and no PDF is produced.
-- **Email.** No confirmation, report or recovery email is sent.
-- **Report lookup.** Demo references exist only in the current browser tab.
-- **Legal pages.** Terms, privacy and refund pages are drafts with yellow
-  placeholders for the owner and a legal adviser to complete.
-- **Brand.** No brand assets were supplied; the wordmark is text and all
-  colours are provisional (see `src/styles/tokens.css`).
+- **Demo mode** (`VITE_DEMO_MODE` not `false`): checkout and report progress
+  are simulated in the browser, labelled on every page, and no request leaves
+  the browser. Nothing is stored except a short demo reference in the tab.
+- **Live mode** (`VITE_DEMO_MODE=false`): the browser calls the Netlify
+  Functions. Payment goes through Stripe's hosted checkout; the webhook (and
+  only server-side verification) fulfils the order; a background worker
+  researches, writes, renders and emails the report; status and download are
+  unlocked by an unguessable, hashed, expiring token from the email link.
+
+Still to be done by the owner before launch: apply the migrations and set the
+environment variables (`docs/BACKEND.md`), review the draft legal pages, and
+supply brand assets (colours in `src/styles/tokens.css` are provisional).
 
 ## Content principles
 
