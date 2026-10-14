@@ -1,0 +1,127 @@
+# Inovantage Idea Validator — project guide
+
+This file documents the product requirements and the implementation conventions
+for this repository. Read it before changing anything.
+
+## Product
+
+A customer submits a business idea plus their personal business circumstances,
+pays once, and receives an evidence-based feasibility report by email with a
+downloadable PDF. No customer account exists or is planned.
+
+- **Audience:** first-time founders, existing business owners, early-stage startups.
+- **Markets:** United Kingdom, United States, Australia. One report covers one
+  idea in one primary market.
+- **Price:** working price £24 per report, charged once, in GBP for all markets.
+  Lives in `src/config/product.ts` (`PRICE`); never hard-code it in copy.
+- **Delivery:** email with a link to a status page and a PDF attachment.
+  Target turnaround is in `TURNAROUND` in the same file.
+- **Report-link recovery:** a customer who lost the email enters their address
+  on `/find-report`; the backend re-sends. The page never reveals report data.
+
+## Pages (all implemented in this frontend)
+
+| Route                  | Component                 | Purpose                                      |
+| ---------------------- | ------------------------- | -------------------------------------------- |
+| `/`                    | `LandingPage`             | Branded landing page, pricing, FAQ           |
+| `/validate/:step`      | `QuestionnairePage`       | Six-step questionnaire (1–6)                 |
+| `/review`              | `ReviewPage`              | Answer review, email confirmation, checkout start |
+| `/checkout`            | `CheckoutPage`            | Checkout handoff / simulated checkout        |
+| `/report/:reportId`    | `ReportStatusPage`        | Processing status and PDF download           |
+| `/sample-report`       | `SampleReportPage`        | Illustrative sample report                   |
+| `/find-report`         | `RecoverPage`             | Report-link recovery by email                |
+| `/terms` `/privacy` `/refunds` | `legal/*`         | Draft legal pages, marked for owner review   |
+
+## Questionnaire
+
+Defined declaratively in `src/questionnaire/schema.ts`. Six steps:
+
+1. Idea, industry, business stage, problem, offer.
+2. Customer, B2B/B2C, country, region/city, service area, alternatives.
+3. Price and currency, revenue model, competitors, differentiation.
+4. Capital, hours per week, experience, team/assets, income objective,
+   timeframe. **Conditional:** existing businesses (stage `trading-new` or
+   `trading-established`) are also asked about revenue, costs, customers and
+   expansion plans.
+5. Start-up, fixed and per-sale costs, acquisition plan, evidence of demand.
+6. Constraints, biggest concern, email, required acknowledgements.
+
+Rules:
+
+- Every numeric estimate is an `estimate` field with an "I don't know yet"
+  option. Do not add numeric fields that forbid "unknown" without a reason.
+- Required fields are validated per step in `validate.ts`; the error summary at
+  the top of the step links to each field. Back/edit navigation is always
+  available (stepper, Back button, Edit links on review).
+- Customers cannot jump past the furthest step they have reached via the URL.
+- The review page requires the email to be typed a second time.
+
+## State and privacy
+
+- Answers live in React state (`src/questionnaire/store.tsx`). **Nothing is
+  written to `localStorage`.** Session-only persistence can be switched on with
+  `VITE_DRAFT_STORAGE=session`; it uses `sessionStorage` for the current tab.
+- After a simulated payment the demo keeps only a report reference, a masked
+  email and timestamps in `sessionStorage`, never the answers.
+- No analytics, tracking or third-party scripts are loaded.
+
+## Demo mode
+
+`VITE_DEMO_MODE` controls simulation. Anything other than the literal string
+`"false"` means demo mode is **on**, so a fresh clone previews safely.
+
+In demo mode:
+
+- A banner at the top of every page says checkout and processing are simulated.
+- `createCheckout` returns an internal `/checkout?report=DEMO-…` route with
+  "Simulate successful payment" and "Simulate cancelled payment" buttons.
+- The status page walks through paid → researching → compiling → ready over
+  about 22 seconds and then states that no PDF was generated.
+- Recovery requests succeed without sending anything.
+
+Never show simulated output as if it were a real customer report. Any mock
+content must be labelled as demo or illustrative in the UI.
+
+## Content rules
+
+- Do not invent testimonials, customer names, market statistics, success rates
+  or guarantees. The landing page and sample report contain none.
+- The sample report is for a made-up business and uses bracketed placeholders
+  where a real report would cite sources. Keep the "Illustrative content, not
+  research" notice.
+- Legal pages are drafts. Keep the `DraftBanner` and the yellow `[placeholder]`
+  marks until the owner and a legal adviser sign them off.
+- Copy uses British English, plain language, and never promises outcomes.
+
+## Design conventions
+
+- All colours, type, spacing, radii, shadows and motion are tokens in
+  `src/styles/tokens.css`. Components use the variables, never raw values.
+- **Brand assets were not available.** The wordmark is text and every colour is
+  provisional; swap them in `tokens.css` only.
+- Fonts are system stacks (serif for headings, sans for body) so no third-party
+  requests or layout shift occur.
+- Motion is restrained and disabled under `prefers-reduced-motion`.
+- Forms: 44px minimum control height, visible focus rings, labels tied to
+  inputs, `fieldset`/`legend` for grouped choices, `aria-describedby` for help
+  and errors, `role="alert"` on error summaries.
+- Layout works from 360px up with a 16px side gutter and no horizontal scroll.
+
+## Tech
+
+- React 19, TypeScript (strict), Vite 7, React Router 7. No UI framework.
+- Path alias `@/` → `src/`.
+- `npm run build` runs `tsc -b` then `vite build`; both must pass before commit.
+- Netlify: `netlify.toml` builds to `dist`, rewrites `/api/*` to
+  `/.netlify/functions/*` and falls back to `index.html` for SPA routes.
+  Functions are not implemented yet; see `netlify/functions/README.md`.
+- Secrets never go in the repo. `.env.example` holds placeholders only; any
+  `VITE_` variable is public in the bundle.
+
+## What remains simulated (backend not built)
+
+- Payment (Stripe or similar) and the create-checkout function.
+- Report research, generation, PDF rendering and storage.
+- Email sending (confirmation, report delivery, link recovery).
+- Report status lookup from a real data store.
+- Legal review of terms, privacy and refund pages; final brand assets.

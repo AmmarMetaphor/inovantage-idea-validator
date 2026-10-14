@@ -1,0 +1,39 @@
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { Layout } from '@/components/Layout';
+import { CheckoutPage } from '@/pages/CheckoutPage';
+import { LandingPage } from '@/pages/LandingPage';
+import { PrivacyPage } from '@/pages/legal/PrivacyPage';
+import { RefundsPage } from '@/pages/legal/RefundsPage';
+import { TermsPage } from '@/pages/legal/TermsPage';
+import { NotFoundPage } from '@/pages/NotFoundPage';
+import { QuestionnairePage } from '@/pages/QuestionnairePage';
+import { RecoverPage } from '@/pages/RecoverPage';
+import { ReportStatusPage } from '@/pages/ReportStatusPage';
+import { ReviewPage } from '@/pages/ReviewPage';
+import { SampleReportPage } from '@/pages/SampleReportPage';
+import { QuestionnaireProvider } from '@/questionnaire/store';
+
+export function App() {
+  return (
+    <BrowserRouter>
+      <QuestionnaireProvider>
+        <Routes>
+          <Route element={<Layout />}>
+            <Route index element={<LandingPage />} />
+            <Route path="validate" element={<Navigate to="/validate/1" replace />} />
+            <Route path="validate/:step" element={<QuestionnairePage />} />
+            <Route path="review" element={<ReviewPage />} />
+            <Route path="checkout" element={<CheckoutPage />} />
+            <Route path="report/:reportId" element={<ReportStatusPage />} />
+            <Route path="sample-report" element={<SampleReportPage />} />
+            <Route path="find-report" element={<RecoverPage />} />
+            <Route path="terms" element={<TermsPage />} />
+            <Route path="privacy" element={<PrivacyPage />} />
+            <Route path="refunds" element={<RefundsPage />} />
+            <Route path="*" element={<NotFoundPage />} />
+          </Route>
+        </Routes>
+      </QuestionnaireProvider>
+    </BrowserRouter>
+  );
+}
