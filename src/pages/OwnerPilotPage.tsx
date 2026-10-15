@@ -33,6 +33,8 @@ export function OwnerPilotPage() {
   };
 
   useEffect(() => {
+    // A demo build never calls the server; nothing here can work, so do not try.
+    if (DEMO_MODE) return;
     void refresh();
   }, []);
 
