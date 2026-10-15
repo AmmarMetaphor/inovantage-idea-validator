@@ -7,7 +7,7 @@ import { Notice } from '@/components/Notice';
 import { usePageTitle } from '@/components/usePageTitle';
 import { currencySymbol, PRICE } from '@/config/product';
 import { DEMO_MODE } from '@/config/runtime';
-import { createCheckout } from '@/lib/api';
+import { createCheckout, createPilotOrder } from '@/lib/api';
 import { asArray, asBool, asEstimate, asString, formatNumber, parseNumberInput } from '@/questionnaire/helpers';
 import { optionLabel, STEPS, visibleFields } from '@/questionnaire/schema';
 import { useQuestionnaire } from '@/questionnaire/store';
@@ -49,7 +49,7 @@ function renderValue(field: Field, answers: Answers): { text: string; empty: boo
 export function ReviewPage() {
   usePageTitle('Review your answers');
   const navigate = useNavigate();
-  const { answers, furthestStep, markReviewed } = useQuestionnaire();
+  const { answers, furthestStep, markReviewed, pilot, clientRequestId, reset } = useQuestionnaire();
   const [confirmEmail, setConfirmEmail] = useState('');
   const [confirmError, setConfirmError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
@@ -80,7 +80,13 @@ export function ReviewPage() {
     setConfirmError(undefined);
     setSubmitting(true);
     try {
-      const session = await createCheckout(answers);
+      if (pilot) {
+        const result = await createPilotOrder(answers, clientRequestId);
+        reset();
+        navigate(result.reportPath, { replace: true });
+        return;
+      }
+      const session = await createCheckout(answers, clientRequestId);
       if (/^https?:\/\//.test(session.checkoutUrl)) {
         // Hosted checkout (live mode): leave the app.
         window.location.assign(session.checkoutUrl);
@@ -144,6 +150,14 @@ export function ReviewPage() {
 
       <form noValidate onSubmit={handleSubmit} style={{ marginTop: 'var(--space-10)' }}>
         <div className="card card--raised stack">
+          {pilot && (
+            <Notice tone="info" title="Owner pilot run" role="note">
+              <p>
+                No payment is taken. The real research pipeline runs and the report is delivered only to
+                the pilot address configured on the server.
+              </p>
+            </Notice>
+          )}
           <h2 style={{ fontSize: 'var(--text-xl)' }}>Where should we send the report?</h2>
           <p className="muted">
             We will email the report link and PDF to <strong>{email || 'the address you gave'}</strong>.
@@ -162,15 +176,19 @@ export function ReviewPage() {
             <Button type="submit" size="lg" disabled={submitting}>
               {submitting ? (
                 <>
-                  <span className="spinner" aria-hidden="true" /> Preparing checkout…
+                  <span className="spinner" aria-hidden="true" /> {pilot ? 'Starting pilot report…' : 'Preparing checkout…'}
                 </>
+              ) : pilot ? (
+                <>Create pilot report (no payment)</>
               ) : (
                 <>Continue to payment · {PRICE.display}</>
               )}
             </Button>
           </div>
           <p className="small muted">
-            {DEMO_MODE ? (
+            {pilot ? (
+              <>Pilot orders are recorded explicitly as unpaid owner tests.</>
+            ) : DEMO_MODE ? (
               <>
                 <DemoBadge /> No payment will be taken. The next screen simulates checkout.
               </>

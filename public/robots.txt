@@ -2,3 +2,4 @@ User-agent: *
 Allow: /
 Disallow: /checkout
 Disallow: /report/
+Disallow: /owner/

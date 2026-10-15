@@ -54,8 +54,12 @@ function check(op: string, res: { error: { message: string; code?: string } | nu
 export class SupabaseDb implements Db {
   constructor(private sb: SupabaseClient) {}
 
-  async createSubmission(input: Parameters<Db['createSubmission']>[0]): Promise<Submission> {
-    return one('submissions.insert', await this.sb.from('submissions').insert(input).select('*').single<Submission>());
+  async createSubmission(input: Parameters<Db['createSubmission']>[0]) {
+    const ins = await this.sb.from('submissions').insert(input).select('*').single<Submission>();
+    if (!ins.error) return { submission: ins.data, created: true };
+    if (ins.error.code !== UNIQUE_VIOLATION || !input.client_request_id) throw new DbError('submissions.insert', ins.error);
+    const existing = one('submissions.byRequest', await this.sb.from('submissions').select('*').eq('client_request_id', input.client_request_id).single<Submission>());
+    return { submission: existing, created: false };
   }
   async getSubmission(id: string) {
     return maybe('submissions.get', await this.sb.from('submissions').select('*').eq('id', id).maybeSingle<Submission>());
@@ -64,8 +68,12 @@ export class SupabaseDb implements Db {
     check('submissions.status', await this.sb.from('submissions').update({ status }).eq('id', id));
   }
 
-  async createOrder(input: Parameters<Db['createOrder']>[0]): Promise<Order> {
-    return one('orders.insert', await this.sb.from('orders').insert(input).select('*').single<Order>());
+  async createOrder(input: Parameters<Db['createOrder']>[0]) {
+    const ins = await this.sb.from('orders').insert(input).select('*').single<Order>();
+    if (!ins.error) return { order: ins.data, created: true };
+    if (ins.error.code !== UNIQUE_VIOLATION) throw new DbError('orders.insert', ins.error);
+    const existing = one('orders.bySubmission', await this.sb.from('orders').select('*').eq('submission_id', input.submission_id).single<Order>());
+    return { order: existing, created: false };
   }
   async getOrder(id: string) {
     return maybe('orders.get', await this.sb.from('orders').select('*').eq('id', id).maybeSingle<Order>());
@@ -79,12 +87,12 @@ export class SupabaseDb implements Db {
   async attachCheckoutSession(orderId: string, sessionId: string, expiresAt: string) {
     check('orders.attachSession', await this.sb.from('orders').update({ stripe_checkout_session_id: sessionId, checkout_expires_at: expiresAt }).eq('id', orderId));
   }
-  async markOrderPaid({ orderId, paymentIntentId, paidAt, reportExpiresAt }: Parameters<Db['markOrderPaid']>[0]) {
+  async markOrderPaid({ orderId, paymentIntentId, authorisedBy, paidAt, reportExpiresAt }: Parameters<Db['markOrderPaid']>[0]) {
     // Conditional update: only a pending order flips to paid. Zero rows means
     // someone else already did it (idempotent duplicate).
     const res = await this.sb
       .from('orders')
-      .update({ status: 'paid', stripe_payment_intent_id: paymentIntentId, paid_at: paidAt, report_expires_at: reportExpiresAt })
+      .update({ status: 'paid', stripe_payment_intent_id: paymentIntentId, authorised_by: authorisedBy, paid_at: paidAt, report_expires_at: reportExpiresAt })
       .eq('id', orderId)
       .eq('status', 'pending_payment')
       .select('*')

@@ -34,10 +34,14 @@ export class MemoryDb implements Db {
     return this.now().toISOString();
   }
 
-  async createSubmission(input: Parameters<Db['createSubmission']>[0]): Promise<Submission> {
+  async createSubmission(input: Parameters<Db['createSubmission']>[0]) {
+    if (input.client_request_id) {
+      const existing = [...this.submissions.values()].find((x) => x.client_request_id === input.client_request_id);
+      if (existing) return { submission: existing, created: false };
+    }
     const s = { id: randomUUID(), created_at: this.ts(), status: 'draft' as const, ...input };
     this.submissions.set(s.id, s);
-    return s;
+    return { submission: s, created: true };
   }
   async getSubmission(id: string) {
     return this.submissions.get(id) ?? null;
@@ -47,15 +51,16 @@ export class MemoryDb implements Db {
     if (s) s.status = status;
   }
 
-  async createOrder(input: Parameters<Db['createOrder']>[0]): Promise<Order> {
-    for (const o of this.orders.values()) if (o.submission_id === input.submission_id) throw new UniqueViolation('orders.submission_id');
+  async createOrder(input: Parameters<Db['createOrder']>[0]) {
+    const existing = [...this.orders.values()].find((o) => o.submission_id === input.submission_id);
+    if (existing) return { order: existing, created: false };
     const o: Order = {
-      id: randomUUID(), created_at: this.ts(), status: 'pending_payment',
+      id: randomUUID(), created_at: this.ts(), status: 'pending_payment', authorised_by: null,
       stripe_checkout_session_id: null, stripe_payment_intent_id: null, checkout_expires_at: null,
       paid_at: null, fulfilled_at: null, failed_reason: null, report_expires_at: null, ...input,
     };
     this.orders.set(o.id, o);
-    return o;
+    return { order: o, created: true };
   }
   async getOrder(id: string) {
     return this.orders.get(id) ?? null;
@@ -72,13 +77,17 @@ export class MemoryDb implements Db {
     o.stripe_checkout_session_id = sessionId;
     o.checkout_expires_at = expiresAt;
   }
-  async markOrderPaid({ orderId, paymentIntentId, paidAt, reportExpiresAt }: Parameters<Db['markOrderPaid']>[0]) {
+  async markOrderPaid({ orderId, paymentIntentId, authorisedBy, paidAt, reportExpiresAt }: Parameters<Db['markOrderPaid']>[0]) {
     const o = this.orders.get(orderId);
     if (!o) throw new Error('order not found');
     if (o.status !== 'pending_payment') return { applied: false, order: o };
-    for (const other of this.orders.values()) if (other.stripe_payment_intent_id === paymentIntentId && other.id !== orderId) throw new UniqueViolation('orders.stripe_payment_intent_id');
+    // Mirror the SQL consistency constraint.
+    if (o.source === 'stripe' && !paymentIntentId) throw new Error('orders_payment_source_consistency');
+    if (o.source === 'pilot' && paymentIntentId) throw new Error('orders_payment_source_consistency');
+    if (paymentIntentId) for (const other of this.orders.values()) if (other.stripe_payment_intent_id === paymentIntentId && other.id !== orderId) throw new UniqueViolation('orders.stripe_payment_intent_id');
     o.status = 'paid';
     o.stripe_payment_intent_id = paymentIntentId;
+    o.authorised_by = authorisedBy;
     o.paid_at = paidAt;
     o.report_expires_at = reportExpiresAt;
     return { applied: true, order: o };

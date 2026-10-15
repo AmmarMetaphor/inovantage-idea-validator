@@ -20,5 +20,29 @@ export default netlifyFunction('health', async () => {
     }
   }
   const ready = Object.values(configured).every((v) => v === true);
-  return json({ ok: true, ready, context: process.env.CONTEXT ?? 'dev', generator: process.env.REPORT_GENERATOR ?? 'anthropic', configured, missing: [...missing] }, ready ? 200 : 503);
+  // Pilot readiness: everything except Stripe. Presence only, not connectivity.
+  const pilotEnabled = process.env.PILOT_MODE === 'true';
+  let pilotConfigured = false;
+  if (pilotEnabled) {
+    try {
+      loadEnv(['pilot']);
+      pilotConfigured = true;
+    } catch (err) {
+      if (err instanceof ConfigError) err.missing.forEach((m) => missing.add(m));
+    }
+  }
+  const pilotReady = pilotEnabled && pilotConfigured && ['db', 'anthropic', 'email', 'worker'].every((g) => configured[g] === true);
+  return json(
+    {
+      ok: true,
+      ready,
+      pilot: { enabled: pilotEnabled, ready: pilotReady },
+      checks: 'configuration presence only; no external connectivity is tested',
+      context: process.env.CONTEXT ?? 'dev',
+      generator: process.env.REPORT_GENERATOR ?? 'anthropic',
+      configured,
+      missing: [...missing],
+    },
+    ready || pilotReady ? 200 : 503,
+  );
 });

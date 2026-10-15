@@ -35,8 +35,24 @@ export interface JobDeps {
   appUrl: string;
   tokenTtlDays: number;
   ownerAlertEmail?: string;
+  /** Pilot orders may only be delivered to these normalised addresses. */
+  pilotAllowedEmails: string[];
   leaseSeconds?: number;
   heartbeatMs?: number;
+}
+
+/** Thrown when a pilot order would be delivered outside the allowlist. */
+export class PilotDeliveryBlocked extends NonRetryableGenerationError {
+  constructor() {
+    super('pilot order delivery address is not on the allowlist');
+    this.name = 'PilotDeliveryBlocked';
+  }
+}
+
+export function assertPilotDeliveryAllowed(order: Pick<Order, 'source' | 'email'>, to: string, allowlist: string[]): void {
+  if (order.source !== 'pilot') return;
+  const target = to.trim().toLowerCase();
+  if (!allowlist.includes(target) || target !== order.email.trim().toLowerCase()) throw new PilotDeliveryBlocked();
 }
 
 export const DEFAULT_LEASE_SECONDS = 600;
@@ -215,6 +231,8 @@ async function runStage(deps: JobDeps, ctx: StageCtx): Promise<Json> {
 }
 
 async function sendTracked(deps: JobDeps, ctx: StageCtx, kind: 'confirmation' | 'report', message: Parameters<Mailer['send']>[0]) {
+  // Server-side guarantee: a pilot order can only ever reach the allowlist.
+  assertPilotDeliveryAllowed(ctx.order, message.to, deps.pilotAllowedEmails);
   try {
     const { providerMessageId } = await deps.mailer.send(message);
     await deps.db.recordDelivery({ order_id: ctx.order.id, job_id: ctx.job.id, kind, provider: 'resend', provider_message_id: providerMessageId, status: 'sent', error: null });
@@ -227,7 +245,8 @@ async function sendTracked(deps: JobDeps, ctx: StageCtx, kind: 'confirmation' | 
 async function alertOwner(deps: JobDeps, job: Job, error: string) {
   if (!deps.ownerAlertEmail) return;
   try {
-    await deps.mailer.send({ to: deps.ownerAlertEmail, ...ownerAlertEmail({ orderRef: shortRef(job.order_id), jobId: job.id, error }) });
+    const { providerMessageId } = await deps.mailer.send({ to: deps.ownerAlertEmail, ...ownerAlertEmail({ orderRef: shortRef(job.order_id), jobId: job.id, error }) });
+    await deps.db.recordDelivery({ order_id: job.order_id, job_id: job.id, kind: 'owner_alert', provider: 'resend', provider_message_id: providerMessageId, status: 'sent', error: null });
   } catch (err) {
     deps.log.warn('job.owner_alert_failed', { err });
   }

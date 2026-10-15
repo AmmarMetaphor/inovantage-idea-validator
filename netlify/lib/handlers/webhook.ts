@@ -71,7 +71,7 @@ export async function stripeWebhook(req: Request, deps: Deps): Promise<Response>
     const result = await fulfilCheckoutSession(
       { db, log, now: deps.now, expectedPriceId: deps.env.stripePriceId, reportAccessDays: deps.env.reportAccessDays, invokeWorker: deps.invokeWorker },
       session,
-      'webhook',
+      'stripe_webhook',
     );
 
     if (result.outcome === 'rejected') {

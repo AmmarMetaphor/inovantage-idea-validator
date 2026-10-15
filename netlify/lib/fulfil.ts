@@ -35,7 +35,7 @@ export type FulfilResult =
   | { outcome: 'not_paid'; order: Order | null }
   | { outcome: 'rejected'; reason: string; orderId: string | null };
 
-export async function fulfilCheckoutSession(deps: FulfilDeps, session: VerifiedSession, source: 'webhook' | 'checkout_return'): Promise<FulfilResult> {
+export async function fulfilCheckoutSession(deps: FulfilDeps, session: VerifiedSession, source: 'stripe_webhook' | 'checkout_return'): Promise<FulfilResult> {
   const { db, log } = deps;
   const orderId = session.metadataOrderId;
 
@@ -44,6 +44,7 @@ export async function fulfilCheckoutSession(deps: FulfilDeps, session: VerifiedS
   }
   const order = await db.getOrder(orderId);
   if (!order) return { outcome: 'rejected', reason: 'order not found', orderId };
+  if (order.source !== 'stripe') return { outcome: 'rejected', reason: 'order is not a Stripe order', orderId };
   if (order.stripe_checkout_session_id !== session.id) {
     return { outcome: 'rejected', reason: 'session does not match the order', orderId };
   }
@@ -62,7 +63,7 @@ export async function fulfilCheckoutSession(deps: FulfilDeps, session: VerifiedS
 
   const now = deps.now();
   const reportExpiresAt = new Date(now.getTime() + deps.reportAccessDays * 86_400_000).toISOString();
-  const paid = await db.markOrderPaid({ orderId, paymentIntentId: session.paymentIntentId, paidAt: now.toISOString(), reportExpiresAt });
+  const paid = await db.markOrderPaid({ orderId, paymentIntentId: session.paymentIntentId, authorisedBy: source, paidAt: now.toISOString(), reportExpiresAt });
   if (!paid.applied && paid.order.stripe_payment_intent_id && paid.order.stripe_payment_intent_id !== session.paymentIntentId) {
     log.error('fulfil.payment_intent_conflict', { order_id: orderId, source });
     return { outcome: 'rejected', reason: 'order already paid by a different payment', orderId };

@@ -14,7 +14,7 @@ async function paidJob(h: Harness) {
 function jobDeps(h: Harness) {
   return {
     db: h.db, blobs: h.blobs, mailer: h.mailer, generator: h.generator, log: h.deps.log, now: h.deps.now,
-    appUrl: 'https://app.test', tokenTtlDays: 30, heartbeatMs: 60_000,
+    appUrl: 'https://app.test', tokenTtlDays: 30, heartbeatMs: 60_000, pilotAllowedEmails: ['support@metaphorconsultants.com'],
     renderPdf: async () => Buffer.from('%PDF-1.4 test'),
   };
 }

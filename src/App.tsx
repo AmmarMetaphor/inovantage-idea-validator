@@ -7,6 +7,7 @@ import { PrivacyPage } from '@/pages/legal/PrivacyPage';
 import { RefundsPage } from '@/pages/legal/RefundsPage';
 import { TermsPage } from '@/pages/legal/TermsPage';
 import { NotFoundPage } from '@/pages/NotFoundPage';
+import { OwnerPilotPage } from '@/pages/OwnerPilotPage';
 import { QuestionnairePage } from '@/pages/QuestionnairePage';
 import { RecoverPage } from '@/pages/RecoverPage';
 import { ReportStatusPage } from '@/pages/ReportStatusPage';
@@ -32,6 +33,7 @@ export function App() {
             <Route path="terms" element={<TermsPage />} />
             <Route path="privacy" element={<PrivacyPage />} />
             <Route path="refunds" element={<RefundsPage />} />
+            <Route path="owner/pilot" element={<OwnerPilotPage />} />
             <Route path="*" element={<NotFoundPage />} />
           </Route>
         </Routes>

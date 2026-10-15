@@ -34,6 +34,7 @@ export async function reportWorker(req: Request, deps: Deps): Promise<Response> 
       appUrl: env.appUrl,
       tokenTtlDays: env.tokenTtlDays,
       ownerAlertEmail: env.ownerAlertEmail,
+      pilotAllowedEmails: env.pilotAllowedEmails,
     },
     body.jobId,
     workerId,

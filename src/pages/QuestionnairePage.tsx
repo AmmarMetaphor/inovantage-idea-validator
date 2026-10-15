@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Navigate, useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/Button';
+import { Notice } from '@/components/Notice';
 import { FieldRenderer } from '@/components/fields';
 import { Stepper } from '@/components/Stepper';
 import { usePageTitle } from '@/components/usePageTitle';
@@ -14,7 +15,7 @@ import { isStepComplete, validateStep } from '@/questionnaire/validate';
 export function QuestionnairePage() {
   const { step: stepParam } = useParams();
   const navigate = useNavigate();
-  const { answers, furthestStep, setAnswer, setAnswers, reachStep } = useQuestionnaire();
+  const { answers, furthestStep, setAnswer, setAnswers, reachStep, pilot } = useQuestionnaire();
 
   const stepNumber = Number(stepParam ?? '1');
   const stepIndex = Number.isInteger(stepNumber) ? stepNumber - 1 : -1;
@@ -101,6 +102,11 @@ export function QuestionnairePage() {
       </div>
 
       <form noValidate onSubmit={handleNext}>
+        {pilot && step.id === 'final' && (
+          <Notice tone="info" title="Owner pilot" role="note">
+            <p>The server will only deliver pilot reports to the configured pilot address; other addresses are refused.</p>
+          </Notice>
+        )}
         {errorEntries.length > 0 && (
           <div
             ref={summaryRef}

@@ -18,14 +18,21 @@ export interface Submission {
   idea_name: string;
   answers: Json;
   status: 'draft' | 'ordered' | 'paid' | 'expired';
+  source: 'public' | 'pilot';
+  client_request_id: string | null;
 }
 
 export type OrderStatus = 'pending_payment' | 'paid' | 'fulfilled' | 'failed' | 'expired' | 'refunded';
+
+export type OrderSource = 'stripe' | 'pilot';
+export type AuthorisedBy = 'stripe_webhook' | 'checkout_return' | 'owner_pilot';
 
 export interface Order {
   id: string;
   created_at: string;
   submission_id: string;
+  source: OrderSource;
+  authorised_by: AuthorisedBy | null;
   email: string;
   email_normalised: string;
   status: OrderStatus;
@@ -104,7 +111,7 @@ export interface AccessToken {
   order_id: string;
   token_hash: string;
   purpose: 'report_access';
-  issued_via: 'checkout_return' | 'email' | 'recovery';
+  issued_via: 'checkout_return' | 'email' | 'recovery' | 'pilot';
   expires_at: string;
   revoked_at: string | null;
   use_count: number;
@@ -125,7 +132,7 @@ export interface WebhookEvent {
   error: string | null;
 }
 
-export type DeliveryKind = 'confirmation' | 'report' | 'recovery';
+export type DeliveryKind = 'confirmation' | 'report' | 'recovery' | 'owner_alert';
 
 export interface DeliveryAttempt {
   id: string;
@@ -141,18 +148,20 @@ export interface DeliveryAttempt {
 
 export interface Db {
   // submissions
-  createSubmission(input: Omit<Submission, 'id' | 'created_at' | 'status'> & { ip_hash?: string; user_agent_hash?: string }): Promise<Submission>;
+  /** Idempotent on client_request_id: a repeat returns the existing row with created=false. */
+  createSubmission(input: Omit<Submission, 'id' | 'created_at' | 'status'> & { ip_hash?: string; user_agent_hash?: string }): Promise<{ submission: Submission; created: boolean }>;
   getSubmission(id: string): Promise<Submission | null>;
   setSubmissionStatus(id: string, status: Submission['status']): Promise<void>;
 
   // orders
-  createOrder(input: { submission_id: string; email: string; email_normalised: string; amount_minor: number; currency: string; stripe_price_id: string }): Promise<Order>;
+  /** Unique per submission: a repeat returns the existing order with created=false. */
+  createOrder(input: { submission_id: string; email: string; email_normalised: string; amount_minor: number; currency: string; stripe_price_id: string | null; source: OrderSource }): Promise<{ order: Order; created: boolean }>;
   getOrder(id: string): Promise<Order | null>;
   getOrderBySubmission(submissionId: string): Promise<Order | null>;
   getOrderByCheckoutSession(sessionId: string): Promise<Order | null>;
   attachCheckoutSession(orderId: string, sessionId: string, expiresAt: string): Promise<void>;
-  /** Idempotent. Returns applied=false when the order was already paid. Throws on payment-intent conflict. */
-  markOrderPaid(input: { orderId: string; paymentIntentId: string; paidAt: string; reportExpiresAt: string }): Promise<{ applied: boolean; order: Order }>;
+  /** Idempotent. Returns applied=false when the order was already paid/authorised. Throws on payment-intent conflict. */
+  markOrderPaid(input: { orderId: string; paymentIntentId: string | null; authorisedBy: AuthorisedBy; paidAt: string; reportExpiresAt: string }): Promise<{ applied: boolean; order: Order }>;
   setOrderStatus(orderId: string, status: OrderStatus, extra?: { failed_reason?: string; fulfilled_at?: string }): Promise<void>;
   /** Paid/fulfilled, unexpired orders for an email (newest first). */
   findActiveOrdersByEmail(emailNormalised: string, now: string, limit: number): Promise<Order[]>;

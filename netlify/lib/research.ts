@@ -97,9 +97,22 @@ function marketName(code: string) {
    Anthropic implementation
 --------------------------------------------------------------------------- */
 
-const SYSTEM_RESEARCH = `You are a research analyst preparing evidence for a business-idea feasibility report. Work only from public, citable sources for the customer's primary market. Prefer official statistics, regulators, trade bodies, established market research summaries, and reputable local sources. Record for each useful finding: what it says, the number if any, the source, and its date. Never invent statistics; if you cannot find a figure, say so explicitly. Do not give advice yet; gather and organise evidence covering: demand and customer base in the stated area, competitors and typical pricing, typical start-up and running costs for this kind of business, regulations or licences, and risks. Keep notes concise and factual.`;
+const SYSTEM_RESEARCH = `You are a research analyst preparing evidence for a business-idea feasibility report. Work only from public, citable sources for the customer's primary market. Prefer official statistics, regulators, trade bodies, established market research summaries, and reputable local sources.
 
-const SYSTEM_COMPOSE = `You write evidence-based feasibility reports for one business idea in one primary market, for the person who will decide whether to pursue it. Tone: calm, direct, plain British English, no hype, no guarantees. Base every factual statement on the supplied research sources and cite them by URL in the claims list; label anything else as an assumption, a customer input, or a calculation. Where the customer marked a figure as unknown, use a researched or clearly labelled assumed figure and say so. Show your arithmetic for break-even and income-objective calculations. Address the customer's biggest concern directly in its own section. Use these section ids in order: summary, idea, market, competition, numbers, fit, risks, next_steps, sources. Never promise outcomes. Never include the customer's email address.`;
+For every useful finding record, on one line: the finding, the number if any, the source URL, and the publication or data date. Write "DATE UNKNOWN" when the page gives no date. Never state a statistic you did not read in a source; if you searched and could not find a figure, write "NOT FOUND: <what you looked for>" so the report can declare the gap. Do not give advice yet.
+
+Cover: demand and customer base in the stated area; competitors and their typical pricing; typical start-up and running costs for this kind of business; regulations, licences or insurance; seasonality and risks. Finish with two lists: "FINDINGS" (one per line with URL and date) and "GAPS" (what could not be found). Keep notes concise and factual.`;
+
+const SYSTEM_COMPOSE = `You write evidence-based feasibility reports for one business idea in one primary market, for the person who will decide whether to pursue it. Tone: calm, direct, plain British English, no hype, no guarantees.
+
+Evidence discipline:
+- A claim of kind "evidence" must rest on a listed research source: put the URL(s) in source_urls and the publication or data date in evidence_date (null only if the source gives none). Mention the date in the sentence where it matters ("in 2024, …").
+- Anything not read in a source is an "assumption", a "customer_input" or a "calculation", never "evidence". Never invent a statistic, percentage or market size. If the research notes say NOT FOUND for something, say plainly in the relevant section that no reliable figure was found, and list it in research_gaps.
+- Where the customer marked a figure as unknown, use a clearly labelled assumed or researched figure and say which.
+- Show your arithmetic for break-even and income-objective calculations as "calculation" claims.
+- Every section's main statements should appear in the claims list with the right kind and confidence.
+
+Structure: use these section ids in order: summary, idea, market, competition, numbers, fit, risks, next_steps, sources. The "sources" section lists each source used with its URL and date. Address the customer's biggest concern directly inside the risks section. research_gaps must list every topic that could not be evidenced; it may be empty only if nothing was missing. Never promise outcomes. Never include the customer's email address.`;
 
 const USER_LOCATION: Record<string, { country: string; timezone: string }> = {
   UK: { country: 'GB', timezone: 'Europe/London' },
@@ -157,7 +170,7 @@ export class AnthropicGenerator implements ReportGenerator {
   }
 
   async compose(brief: Brief, sources: ResearchSource[], notes: string): Promise<ComposeOutput> {
-    const sourceList = sources.map((s, i) => `[${i + 1}] ${s.title ?? s.url} — ${s.url}${s.page_age ? ` (${s.page_age})` : ''}`).join('\n');
+    const sourceList = sources.map((s, i) => `[${i + 1}] ${s.title ?? s.url} — ${s.url} — date: ${s.page_age ?? 'unknown'}`).join('\n');
     const stream = this.client.messages.stream({
       model: this.model,
       max_tokens: 24000,
@@ -242,9 +255,10 @@ export class StubGenerator implements ReportGenerator {
         sec('next_steps', 'Next steps', stubNote),
         sec('sources', 'Sources', sources.map((s) => s.url).join('\n') || 'none'),
       ],
-      claims: [{ section_id: 'summary', text: stubNote, kind: 'assumption', confidence: 'low', source_urls: [] }],
+      claims: [{ section_id: 'summary', text: stubNote, kind: 'assumption', confidence: 'low', source_urls: [], evidence_date: null }],
       next_steps: ['Configure REPORT_GENERATOR=anthropic', 'Set ANTHROPIC_API_KEY', 'Re-run the job'],
       assumptions: ['Everything: this is stub output.'],
+      research_gaps: ['All of it: no research was performed.'],
       limitations: stubNote,
     };
     return { report, model: 'stub', usage: { input_tokens: 0, output_tokens: 0 } };

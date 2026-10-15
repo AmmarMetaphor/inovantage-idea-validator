@@ -32,6 +32,7 @@ downloadable PDF. No customer account exists or is planned.
 | `/sample-report`       | `SampleReportPage`        | Illustrative sample report                   |
 | `/find-report`         | `RecoverPage`             | Report-link recovery by email                |
 | `/terms` `/privacy` `/refunds` | `legal/*`         | Draft legal pages, marked for owner review   |
+| `/owner/pilot`         | `OwnerPilotPage`          | Owner-only pilot (server-gated, not linked)  |
 
 ## Questionnaire
 
@@ -142,16 +143,27 @@ Read `docs/BACKEND.md` before touching `netlify/` or `supabase/`.
   with backoff; the scheduled dispatcher recovers expired leases. A change
   to a stage must keep it safe to re-run.
 - **Migrations.** Add a new file under `supabase/migrations/` with the next
-  timestamp; never edit an applied one. Every new table gets RLS enabled and
+  timestamp; never edit an applied one (0001–0004 are applied in
+  production; 0005 adds pilot columns). Every new table gets RLS enabled and
   forced with no policies, and grants revoked from `anon`/`authenticated`.
 - **Config.** All env reads go through `netlify/lib/env.ts`. Missing values
   throw `ConfigError` → HTTP 503 listing variable names (never values).
   `REPORT_GENERATOR=stub` and demo mode are refused in production.
 - **Logging.** Use the logger in `netlify/lib/log.ts`; never `console.log`
   customer data. Tokens, emails, answers and report text are redacted by key.
+- **Pilot.** `PILOT_MODE=true` enables owner-only pilot orders
+  (`netlify/lib/handlers/owner.ts`): `orders.source='pilot'`, amount 0,
+  `authorised_by='owner_pilot'`, no Stripe ids, same job pipeline. Delivery
+  is restricted to `env.pilotAllowedEmails` at send time in `jobs.ts`.
+  Never relax that check, never read the pilot password anywhere but
+  `env.ts`, and never put pilot secrets in `VITE_` variables.
+- **Idempotency.** Submissions carry `client_request_id`; orders are unique
+  per submission; jobs unique per order; email stages check
+  `delivery_attempts`. Keep all four when touching the flow.
 - **Tests.** `tests/` cover forged/duplicate/concurrent payment events,
-  unpaid and cross-customer access, link recovery, interrupted jobs and
-  bounded retries. Add a test for every new trust boundary.
+  unpaid and cross-customer access, link recovery, interrupted jobs,
+  bounded retries, the owner session and pilot allowlist. Add a test for
+  every new trust boundary.
 
 ## What remains for the owner
 

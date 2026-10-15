@@ -3,6 +3,7 @@ import type { Deps } from '../deps';
 import type { Job, Order, Report } from '../db/types';
 import { recoveryEmail } from '../emails';
 import { fulfilCheckoutSession } from '../fulfil';
+import { assertPilotDeliveryAllowed } from '../jobs';
 import { clientIp, HttpError, isObject, json, readJson, requireMethod } from '../http';
 import { checkAccessToken, mintAccessToken } from '../tokens';
 import { enforceRateLimit } from './ratelimit';
@@ -156,6 +157,7 @@ export async function recoverReport(req: Request, deps: Deps, contextIp?: string
     const mail = recoveryEmail({ links, expiresOn: soonest.slice(0, 10) });
     // Only ever to the address on the original order, never to the one typed in.
     const to = orders[0].email;
+    for (const o of orders) assertPilotDeliveryAllowed(o, to, deps.env.pilotAllowedEmails);
     const { providerMessageId } = await deps.mailer.send({ to, ...mail });
     for (const l of links) await deps.db.recordDelivery({ order_id: l.orderId, job_id: null, kind: 'recovery', provider: 'resend', provider_message_id: providerMessageId, status: 'sent', error: null });
     deps.log.info('recover.sent', { orders: links.length });

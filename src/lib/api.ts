@@ -136,7 +136,7 @@ export function isDemoReference(ref: string): boolean {
    Public API
 --------------------------------------------------------------------------- */
 
-export async function createCheckout(answers: Answers): Promise<CheckoutSession> {
+export async function createCheckout(answers: Answers, clientRequestId?: string): Promise<CheckoutSession> {
   const email = typeof answers.email === 'string' ? answers.email : '';
   if (DEMO_MODE) {
     await sleep(700);
@@ -148,7 +148,7 @@ export async function createCheckout(answers: Answers): Promise<CheckoutSession>
   }
   const { submissionId } = await request<{ submissionId: string }>('/api/create-submission', {
     method: 'POST',
-    body: JSON.stringify({ answers, website: '' }),
+    body: JSON.stringify({ answers, website: '', clientRequestId }),
   });
   const session = await request<{ checkoutUrl: string; orderRef: string }>('/api/create-checkout', {
     method: 'POST',
@@ -198,4 +198,44 @@ export async function requestRecoveryLink(email: string): Promise<{ ok: true; de
   }
   await request<unknown>('/api/recover-report', { method: 'POST', body: JSON.stringify({ email }) });
   return { ok: true, demo: false };
+}
+
+/* ---------------------------------------------------------------------------
+   Owner pilot (server-gated; the browser only sees "authenticated" or not)
+--------------------------------------------------------------------------- */
+
+export interface OwnerSession {
+  authenticated: boolean;
+  pilotMode: boolean;
+  expiresAt?: string;
+  allowedEmails?: string[];
+  generator?: string;
+  model?: string;
+  context?: string;
+}
+
+export async function getOwnerSession(): Promise<OwnerSession> {
+  const res = await fetch('/api/owner-session', { headers: { Accept: 'application/json' }, credentials: 'same-origin', referrerPolicy: 'no-referrer' });
+  if (res.status === 404) return { authenticated: false, pilotMode: false };
+  if (!res.ok) throw new ApiError(`The service responded with ${res.status}.`, res.status);
+  return (await res.json()) as OwnerSession;
+}
+
+export async function ownerLogin(password: string): Promise<{ ok: true; expiresAt: string }> {
+  return request('/api/owner-login', { method: 'POST', body: JSON.stringify({ password }), credentials: 'same-origin' });
+}
+
+export async function ownerLogout(): Promise<void> {
+  await request('/api/owner-logout', { method: 'POST', credentials: 'same-origin' });
+}
+
+export interface PilotOrderResult {
+  reportPath: string;
+  orderRef: string;
+  created: boolean;
+  jobId: string;
+}
+
+export async function createPilotOrder(answers: Answers, clientRequestId: string): Promise<PilotOrderResult> {
+  return request('/api/pilot-order', { method: 'POST', body: JSON.stringify({ answers, clientRequestId }), credentials: 'same-origin' });
 }

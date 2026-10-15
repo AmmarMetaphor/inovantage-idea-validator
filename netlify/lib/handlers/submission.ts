@@ -27,18 +27,21 @@ export async function createSubmission(req: Request, deps: Deps, contextIp?: str
   if (!result.ok) throw new HttpError(400, 'validation_failed', 'Some answers are missing or invalid.', { errors: result.errors });
 
   const v = result.value;
-  const submission = await deps.db.createSubmission({
+  const clientRequestId = typeof body.clientRequestId === 'string' && UUID_RE.test(body.clientRequestId) ? body.clientRequestId.toLowerCase() : null;
+  const { submission, created } = await deps.db.createSubmission({
     email: v.email,
     email_normalised: normaliseEmail(v.email),
     market: v.market,
     currency: v.currency,
     idea_name: v.ideaName,
     answers: v.answers,
+    source: 'public',
+    client_request_id: clientRequestId,
     ip_hash: ip,
     user_agent_hash: sha256Hex(req.headers.get('user-agent') ?? '').slice(0, 32),
   });
-  deps.log.info('submission.created', { submission_id: submission.id, market: v.market });
-  return json({ submissionId: submission.id }, 201);
+  deps.log.info(created ? 'submission.created' : 'submission.deduplicated', { submission_id: submission.id, market: v.market });
+  return json({ submissionId: submission.id }, created ? 201 : 200);
 }
 
 /** POST /api/create-checkout  { submissionId } → { checkoutUrl, orderRef } */
@@ -64,19 +67,19 @@ export async function createCheckout(req: Request, deps: Deps, contextIp?: strin
   const payments = deps.payments; // validates Stripe configuration or throws a setup error
   await payments.verifyPrice(env.stripePriceId, { amountMinor: PRICE.amountMinor, currency: PRICE.currency });
 
-  let order = await deps.db.getOrderBySubmission(submission.id);
-  if (order && order.status !== 'pending_payment' && order.status !== 'expired') {
+  if (submission.source === 'pilot') throw new HttpError(409, 'pilot_submission', 'Pilot submissions are not paid through checkout.');
+  const { order } = await deps.db.createOrder({
+    submission_id: submission.id,
+    email: submission.email,
+    email_normalised: submission.email_normalised,
+    amount_minor: PRICE.amountMinor,
+    currency: PRICE.currency,
+    stripe_price_id: env.stripePriceId,
+    source: 'stripe',
+  });
+  if (order.source !== 'stripe') throw new HttpError(409, 'order_not_pending', 'This order is not a checkout order.');
+  if (order.status !== 'pending_payment' && order.status !== 'expired') {
     throw new HttpError(409, 'order_not_pending', `This order is ${order.status}.`);
-  }
-  if (!order) {
-    order = await deps.db.createOrder({
-      submission_id: submission.id,
-      email: submission.email,
-      email_normalised: submission.email_normalised,
-      amount_minor: PRICE.amountMinor,
-      currency: PRICE.currency,
-      stripe_price_id: env.stripePriceId,
-    });
   }
 
   const nowUnix = Math.floor(deps.now().getTime() / 1000);

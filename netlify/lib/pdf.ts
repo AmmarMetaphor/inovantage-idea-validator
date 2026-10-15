@@ -74,13 +74,24 @@ export async function renderReportPdf(report: ReportContent, meta: PdfMeta): Pro
     bullets(doc, report.assumptions, width);
   }
 
+  doc.moveDown(0.6);
+  heading(doc, 'Research gaps');
+  if (report.research_gaps.length) {
+    doc.font('Helvetica').fontSize(9.5).fillColor(MUTED).text('Topics where no reliable public evidence was found. Treat related statements as assumptions.', { width });
+    doc.moveDown(0.3);
+    bullets(doc, report.research_gaps, width);
+  } else {
+    doc.font('Helvetica').fontSize(10.5).fillColor('#0b1a2e').text('None declared by the researcher.', { width });
+  }
+
   if (report.claims.length) {
     doc.moveDown(0.6);
     heading(doc, 'Evidence and basis of claims');
     doc.font('Helvetica').fontSize(8.5).fillColor(MUTED).text('Each claim is tagged with its basis. Evidence claims cite public sources; assumptions were not verified.', { width });
     doc.moveDown(0.4);
     for (const c of report.claims) {
-      doc.font('Helvetica-Bold').fontSize(8.5).fillColor(NAVY).text(`[${c.kind}, ${c.confidence} confidence] `, { continued: true });
+      const tag = c.kind === 'evidence' && c.evidence_date ? `[${c.kind}, ${c.confidence} confidence, ${c.evidence_date}] ` : `[${c.kind}, ${c.confidence} confidence] `;
+      doc.font('Helvetica-Bold').fontSize(8.5).fillColor(NAVY).text(tag, { continued: true });
       doc.font('Helvetica').fillColor('#0b1a2e').text(c.text, { width, lineGap: 1 });
       if (c.source_urls.length) doc.font('Helvetica').fontSize(7.5).fillColor(MUTED).text(c.source_urls.join('  ·  '), { width });
       doc.moveDown(0.3);

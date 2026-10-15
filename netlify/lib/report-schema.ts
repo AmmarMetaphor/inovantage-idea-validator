@@ -17,7 +17,10 @@ export const ClaimSchema = z.object({
   text: z.string().min(1).max(600),
   kind: z.enum(['evidence', 'assumption', 'customer_input', 'calculation']),
   confidence: z.enum(['high', 'medium', 'low']),
+  /** Required for evidence claims: the URLs the statement rests on. */
   source_urls: z.array(z.string().max(500)).max(6),
+  /** Publication or data date of the evidence, e.g. "2024" or "March 2025", or null if unknown. */
+  evidence_date: z.string().max(40).nullable(),
 });
 
 export const SectionSchema = z.object({
@@ -44,6 +47,8 @@ export const ReportContentSchema = z.object({
   claims: z.array(ClaimSchema).max(80),
   next_steps: z.array(z.string().max(400)).min(3).max(10),
   assumptions: z.array(z.string().max(400)).max(20),
+  /** What could not be found or verified; must be explicit, never empty when research was thin. */
+  research_gaps: z.array(z.string().max(400)).max(15),
   limitations: z.string().max(1500),
 });
 

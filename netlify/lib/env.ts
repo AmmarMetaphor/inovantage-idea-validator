@@ -47,6 +47,13 @@ export interface Env {
   workerSecret: string;
   ipHashSalt: string;
 
+  /** Owner-only pilot (no Stripe). Off unless PILOT_MODE=true. */
+  pilotMode: boolean;
+  pilotOwnerPassword: string;
+  pilotSessionSecret: string;
+  /** Normalised addresses the pilot may deliver to. Enforced server-side. */
+  pilotAllowedEmails: string[];
+
   reportAccessDays: number;
   tokenTtlDays: number;
   recoveryTokenTtlDays: number;
@@ -69,7 +76,7 @@ function readInt(src: Source, name: string, fallback: number): number {
 
 /** Groups let a function demand only what it uses, so e.g. the status
  *  endpoint still works when the email provider is not configured yet. */
-export type EnvGroup = 'db' | 'stripe' | 'anthropic' | 'email' | 'worker';
+export type EnvGroup = 'db' | 'stripe' | 'anthropic' | 'email' | 'worker' | 'pilot';
 
 const GROUPS: Record<EnvGroup, string[]> = {
   db: ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'],
@@ -77,7 +84,32 @@ const GROUPS: Record<EnvGroup, string[]> = {
   anthropic: ['ANTHROPIC_API_KEY'],
   email: ['RESEND_API_KEY', 'EMAIL_FROM'],
   worker: ['WORKER_SECRET', 'IP_HASH_SALT'],
+  pilot: ['PILOT_OWNER_PASSWORD', 'PILOT_SESSION_SECRET'],
 };
+
+/** The only address the pilot may deliver to unless PILOT_ALLOWED_EMAILS overrides it. */
+export const DEFAULT_PILOT_ALLOWED_EMAILS = ['support@metaphorconsultants.com'];
+
+/**
+ * Accepts a legacy service_role JWT or a new-format `sb_secret_…` key.
+ * Rejects anything that is visibly a public key, so a misplaced anon or
+ * publishable key fails at startup instead of silently hitting RLS walls.
+ */
+export function checkSupabaseServerKey(key: string): string | null {
+  if (key.startsWith('sb_secret_')) return null;
+  if (key.startsWith('sb_publishable_')) return 'SUPABASE_SERVICE_ROLE_KEY is a publishable (public) key; use the sb_secret_ key.';
+  const parts = key.split('.');
+  if (parts.length === 3) {
+    try {
+      const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString()) as { role?: string };
+      if (payload.role === 'anon') return 'SUPABASE_SERVICE_ROLE_KEY is the anon (public) key; use the service_role or sb_secret_ key.';
+      if (payload.role === 'service_role') return null;
+    } catch {
+      /* fall through */
+    }
+  }
+  return 'SUPABASE_SERVICE_ROLE_KEY is not a recognised Supabase server key (expected sb_secret_… or a service_role JWT).';
+}
 
 export function loadEnv(groups: EnvGroup[], src: Source = process.env): Env {
   const context = read(src, 'CONTEXT') ?? 'dev';
@@ -107,6 +139,24 @@ export function loadEnv(groups: EnvGroup[], src: Source = process.env): Env {
   if (groups.includes('worker') && workerSecret && workerSecret.length < 32) {
     throw new ConfigError(['WORKER_SECRET'], 'WORKER_SECRET must be at least 32 characters (use `openssl rand -hex 32`).');
   }
+  const serverKey = read(src, 'SUPABASE_SERVICE_ROLE_KEY');
+  if (groups.includes('db') && serverKey) {
+    const problem = checkSupabaseServerKey(serverKey);
+    if (problem) throw new ConfigError(['SUPABASE_SERVICE_ROLE_KEY'], problem);
+  }
+
+  const pilotMode = read(src, 'PILOT_MODE') === 'true';
+  const pilotPassword = read(src, 'PILOT_OWNER_PASSWORD') ?? '';
+  const pilotSecret = read(src, 'PILOT_SESSION_SECRET') ?? '';
+  if (groups.includes('pilot')) {
+    if (!pilotMode) throw new ConfigError(['PILOT_MODE'], 'The owner pilot is disabled. Set PILOT_MODE=true to enable it.');
+    if (pilotPassword.length < 12) throw new ConfigError(['PILOT_OWNER_PASSWORD'], 'PILOT_OWNER_PASSWORD must be at least 12 characters.');
+    if (pilotSecret.length < 32) throw new ConfigError(['PILOT_SESSION_SECRET'], 'PILOT_SESSION_SECRET must be at least 32 characters (use `openssl rand -hex 32`).');
+  }
+  const pilotAllowedEmails = (read(src, 'PILOT_ALLOWED_EMAILS') ?? DEFAULT_PILOT_ALLOWED_EMAILS.join(','))
+    .split(',')
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
 
   // Public origin for emails, Stripe redirects and worker invocation.
   // APP_URL wins. Otherwise Netlify's DEPLOY_PRIME_URL points at *this*
@@ -132,6 +182,10 @@ export function loadEnv(groups: EnvGroup[], src: Source = process.env): Env {
     ownerAlertEmail: read(src, 'OWNER_ALERT_EMAIL'),
     workerSecret: workerSecret ?? '',
     ipHashSalt: read(src, 'IP_HASH_SALT') ?? '',
+    pilotMode,
+    pilotOwnerPassword: pilotPassword,
+    pilotSessionSecret: pilotSecret,
+    pilotAllowedEmails,
     reportAccessDays: readInt(src, 'REPORT_ACCESS_DAYS', 90),
     tokenTtlDays: readInt(src, 'TOKEN_TTL_DAYS', 30),
     recoveryTokenTtlDays: readInt(src, 'RECOVERY_TOKEN_TTL_DAYS', 7),

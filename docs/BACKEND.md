@@ -31,8 +31,11 @@ exposed; customers see an 8-character short reference only.
 
 ## 1. Supabase
 
-1. Create a project. Note the project URL and the **service role** key
-   (Project Settings → API). The anon key is not used.
+1. Create a project. Note the project URL and a **server** key
+   (Project Settings → API keys). Supabase now issues `sb_secret_…` keys;
+   the legacy `service_role` JWT also works. Put either in
+   `SUPABASE_SERVICE_ROLE_KEY`. The public (`sb_publishable_…` / anon) key is
+   never used by this code and is rejected if placed in that variable.
 2. Apply the migrations in order. With the Supabase CLI:
 
    ```bash
@@ -49,8 +52,14 @@ exposed; customers see an 8-character short reference only.
    | `20261014000200_security.sql` | RLS enabled and forced on every table, no policies, all grants revoked from `anon`/`authenticated` |
    | `20261014000300_storage.sql` | private `reports` bucket (PDF only, 20 MB cap) |
    | `20261014000400_functions.sql` | `claim_job`, `extend_job_lease`, `recover_stalled_jobs`, `consume_rate_limit`, `prune_rate_limits` (service role only) |
+   | `20261015000500_pilot_orders.sql` | pilot columns on orders/submissions, idempotency index, extended check constraints (adds only) |
 
-3. Verify the lockdown: with the anon key, `select * from orders` must fail.
+3. Verify the lockdown two ways: run `supabase/verify_rls.sql` in the SQL
+   editor (every table must show `rls_enabled`, `rls_forced`, zero policies,
+   no anon/authenticated SELECT), and run
+   `SUPABASE_URL=… SUPABASE_PUBLIC_KEY=sb_publishable_… node scripts/verify-rls.mjs`
+   from your machine, which tries to read every table and the PDF bucket
+   with a public key and must report every check as OK.
 
 ## 2. Stripe
 
@@ -137,6 +146,21 @@ before changing stage boundaries): synchronous functions must answer quickly
 `report-worker-background` relies on the 15-minute background limit; the
 dispatcher runs under the 30-second scheduled limit and only *invokes* workers.
 
+## Owner pilot (no Stripe)
+
+See `docs/PILOT.md` for the owner checklist. In short: `PILOT_MODE=true`
+plus `PILOT_OWNER_PASSWORD` and `PILOT_SESSION_SECRET` enable
+`/owner/pilot`. Login is validated server-side with a constant-time compare
+and rate limited (5 per 15 minutes per IP). The session is a signed, two-hour,
+Secure/HttpOnly/SameSite=Strict cookie. A pilot order is written as
+`orders.source = 'pilot'`, `amount_minor = 0`, `authorised_by = 'owner_pilot'`
+with no Stripe ids, then runs the identical job pipeline. Every email for a
+pilot order is checked against `PILOT_ALLOWED_EMAILS` (default
+`support@metaphorconsultants.com`) at send time; anything else is refused and
+the job is marked dead. Submissions carry a browser-generated
+`clientRequestId`, so a retried request returns the existing submission, order
+and job rather than creating duplicates.
+
 ## Endpoints
 
 | Method | Path | Auth | Purpose |
@@ -150,7 +174,11 @@ dispatcher runs under the 30-second scheduled limit and only *invokes* workers.
 | POST | `/api/recover-report` `{ email }` | 5/15 min per IP, 3/day per email | always `{ ok: true }`; emails the original order address only |
 | POST | `/.netlify/functions/report-worker-background` | `Bearer WORKER_SECRET` | run one job |
 | cron | `dispatch-jobs` | Netlify scheduler | recovery and dispatch every 5 minutes |
-| GET | `/api/health` | none | configuration readiness (names only) |
+| GET | `/api/health` | none | configuration readiness (names only; no connectivity checks) |
+| POST | `/api/owner-login` `{ password }` | PILOT_MODE, 5/15 min per IP | sets the owner session cookie |
+| GET | `/api/owner-session` | PILOT_MODE | `{ authenticated, allowedEmails, generator, model }` |
+| POST | `/api/owner-logout` | PILOT_MODE | clears the cookie |
+| POST | `/api/pilot-order` `{ answers, clientRequestId }` | owner cookie, 10/h per IP | explicit pilot order → `{ reportPath, orderRef }` |
 
 ## Jobs: leases, checkpoints, retries
 

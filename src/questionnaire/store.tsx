@@ -25,6 +25,10 @@ interface State {
   furthestStep: number;
   /** Set once the customer has visited the review page. */
   reviewed: boolean;
+  /** Owner pilot run (set from the owner page; never persisted). */
+  pilot: boolean;
+  /** Idempotency key sent with the submission so a retry cannot duplicate it. */
+  clientRequestId: string;
 }
 
 type Action =
@@ -32,9 +36,15 @@ type Action =
   | { type: 'setMany'; values: Answers }
   | { type: 'reach'; step: number }
   | { type: 'reviewed' }
+  | { type: 'pilot'; on: boolean }
   | { type: 'reset' };
 
-const initialState: State = { answers: {}, furthestStep: 0, reviewed: false };
+function newRequestId(): string {
+  return typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+}
+
+const makeInitial = (): State => ({ answers: {}, furthestStep: 0, reviewed: false, pilot: false, clientRequestId: newRequestId() });
+const initialState: State = makeInitial();
 
 function reducer(state: State, action: Action): State {
   switch (action.type) {
@@ -46,8 +56,10 @@ function reducer(state: State, action: Action): State {
       return { ...state, furthestStep: Math.max(state.furthestStep, action.step) };
     case 'reviewed':
       return { ...state, reviewed: true };
+    case 'pilot':
+      return { ...state, pilot: action.on };
     case 'reset':
-      return initialState;
+      return makeInitial();
   }
 }
 
@@ -58,6 +70,7 @@ function loadInitial(): State {
     if (!raw) return initialState;
     const parsed = JSON.parse(raw) as Partial<State>;
     return {
+      ...makeInitial(),
       answers: parsed.answers ?? {},
       furthestStep: parsed.furthestStep ?? 0,
       reviewed: parsed.reviewed ?? false,
@@ -72,6 +85,7 @@ interface QuestionnaireContextValue extends State {
   setAnswers: (values: Answers) => void;
   reachStep: (step: number) => void;
   markReviewed: () => void;
+  setPilot: (on: boolean) => void;
   reset: () => void;
 }
 
@@ -83,7 +97,8 @@ export function QuestionnaireProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (DRAFT_STORAGE !== 'session') return;
     try {
-      window.sessionStorage.setItem(SESSION_KEY, JSON.stringify(state));
+      const { pilot: _pilot, ...persisted } = state; // the pilot flag is never persisted
+      window.sessionStorage.setItem(SESSION_KEY, JSON.stringify(persisted));
     } catch {
       /* storage may be unavailable (private mode); ignore */
     }
@@ -96,6 +111,7 @@ export function QuestionnaireProvider({ children }: { children: ReactNode }) {
   const setAnswers = useCallback((values: Answers) => dispatch({ type: 'setMany', values }), []);
   const reachStep = useCallback((step: number) => dispatch({ type: 'reach', step }), []);
   const markReviewed = useCallback(() => dispatch({ type: 'reviewed' }), []);
+  const setPilot = useCallback((on: boolean) => dispatch({ type: 'pilot', on }), []);
   const reset = useCallback(() => {
     dispatch({ type: 'reset' });
     try {
@@ -106,8 +122,8 @@ export function QuestionnaireProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ ...state, setAnswer, setAnswers, reachStep, markReviewed, reset }),
-    [state, setAnswer, setAnswers, reachStep, markReviewed, reset],
+    () => ({ ...state, setAnswer, setAnswers, reachStep, markReviewed, setPilot, reset }),
+    [state, setAnswer, setAnswers, reachStep, markReviewed, setPilot, reset],
   );
 
   return <QuestionnaireContext.Provider value={value}>{children}</QuestionnaireContext.Provider>;

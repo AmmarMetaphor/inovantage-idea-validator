@@ -22,7 +22,7 @@ export const TEST_ENV = {
   CONTEXT: 'dev',
   APP_URL: 'https://app.test',
   SUPABASE_URL: 'https://x.supabase.co',
-  SUPABASE_SERVICE_ROLE_KEY: 'service-role-placeholder',
+  SUPABASE_SERVICE_ROLE_KEY: 'sb_secret_placeholder_for_tests',
   STRIPE_SECRET_KEY: 'sk_test_placeholder',
   STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET,
   STRIPE_PRICE_ID: PRICE_ID,
