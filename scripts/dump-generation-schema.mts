@@ -15,7 +15,7 @@ if (isMain) {
   const [app, gen] = mods;
   const targets: [string, ZodType][] = [];
   if (which === 'all' || which === 'app') targets.push(['app:StandardReportSchema', app.StandardReportSchema], ['app:DetailedReportSchema', app.DetailedReportSchema]);
-  if (gen && (which === 'all' || which === 'gen')) targets.push(['gen:StandardGenSchema', gen.StandardGenSchema], ['gen:DetailedGenSchema', gen.DetailedGenSchema]);
+  if (which === 'all' || which === 'gen') for (const [k, schema] of Object.entries(gen.GENERATION_SCHEMAS)) targets.push([`gen:${k}`, schema]);
   for (const [name, schema] of targets) {
     const { result, json } = schemaStats(name, schema);
     console.log(JSON.stringify(result));

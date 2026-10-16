@@ -115,36 +115,62 @@ Set `ANTHROPIC_API_KEY`. The default model is `claude-opus-5-5`
 restricted to the customer's market; composition uses structured outputs
 with **no tools** in the request.
 
-**Two schemas, one mapping.** The API compiles `output_config.format` into a
-grammar, and the full application model (`netlify/lib/report-schema.ts`:
-nested objects, nullable unions, enums, 13 `$defs`) was rejected with HTTP 400
-"The compiled grammar is too large". Composition therefore sends the compact
-shapes in `netlify/lib/generation-schema.ts` (`StandardGenSchema`,
-`DetailedGenSchema`: flat objects, plain string/number arrays, no unions, no
-enums, no nullable fields, five or six object shapes) and
-`mapStandardGeneration` / `mapDetailedGeneration` turn the result into the
-application model. Every business rule lives in that mapping, on the server:
+**Generation in parts.** The API compiles `output_config.format` into a
+grammar and rejects large ones with HTTP 400 "The compiled grammar is too
+large". Two shapes failed live: the full application model
+(`netlify/lib/report-schema.ts`, 72 properties, 15 object shapes, 8 nullable
+unions; `req_011Cg69DBbcWEcjBbUimXPtJ`) and a single flat object with 62
+properties over 5 shapes (`req_011Cg6CEUVVA1hXsnDuoXcHH`). The published
+limits (24 optional, 16 union parameters) were not the binding constraint;
+the internal limit tracks total property count. Composition therefore runs
+several small **parallel** requests, each with one flat object as its format
+(`netlify/lib/generation-schema.ts`, `GENERATION_SCHEMAS`): no nested
+objects, no unions, no enums, no optionals, no `$defs`, at most 16
+properties, arrays no deeper than `number[][]`, and **no tools**.
+
+| Part | Properties | Content |
+| --- | --- | --- |
+| `standard.verdict` | 15 | title, summary, verdict, scores, SWOT, limitations, claims |
+| `standard.finance` | 16 | financial inputs (parallel arrays), chart, claims |
+| `standard.action` | 13 | risks, improvements, experiment, sources used, claims |
+| `detailed.sections` ×5 | 14 | two sections each (2+2+2+2+1 of the nine), claims |
+| `detailed.summary` | 16 | title, executive summary, inputs, sensitivity, sources, limitations, claims |
+
+`mapStandardParts` / `mapDetailedParts` merge the parts into the application
+model. Every business rule lives in that mapping, on the server:
 
 - lengths and counts are clamped to the editorial limits (two-page PDF);
-- labels (verdict, basis, claim kind, confidence, section ids) are
-  normalised, with conservative fallbacks recorded in the mapping diagnostics;
+- labels (verdict, basis, claim kind, confidence) are normalised, with
+  conservative fallbacks recorded in the mapping diagnostics;
 - sources are cited **by research id** (`[n]` in the prompt) and resolved
   from `research_sources`; ids that do not exist are dropped, an "evidence"
-  claim or chart point without a valid id is downgraded, and the URL, title
-  and publisher always come from the research row, never from the model;
-- unknowns stay explicit: `known=false`, `"unknown"` dates and `0` scores
-  become `null`; nothing is filled in with invented values.
+  claim or chart point without a valid id is downgraded, and the URL, title,
+  publisher, date, geography and period always come from the research row,
+  never from the model;
+- unknowns stay explicit: `finance_known=false` and `0` scores become
+  `null`; nothing is filled in with invented values.
 
-`npm run schema:dump` prints the exact JSON Schema the SDK sends (add
-`--print` for the full document) with size metrics; `tests/generation.test.ts`
-fails if a schema grows unions, enums, length constraints or more object
-shapes.
+**Grammar fallback.** If the API still rejects one part's grammar as too
+large, that part alone is regenerated once without `output_config.format`
+(the schema is quoted in the prompt), the text is parsed and validated with
+the same Zod schema, and an invalid answer is retried once with the
+validation errors. The job then continues; `compose.grammar_fallback` is
+logged and `jobs.checkpoint.compose_fallbacks` lists the parts, so the owner
+can see it happened. Any other API rejection stays non-retryable (below).
+
+`npm run schema:dump` prints every schema the SDK sends (add `--print` for
+the documents) with size metrics; `npx tsx scripts/capture-compose-request.mts`
+captures the exact request bodies through a fake fetch (model, format bytes
+and property count, tool count, system and message sizes);
+`tests/generation.test.ts` fails if a schema grows past 16 properties or
+gains unions, enums, `$defs` or constraints.
 
 **Request rejections are not retried.** A 400/401/403/404/413/422 from the
 API (`classifyApiError` in `research.ts`) becomes `GenerationRequestError`:
 the job dies on that attempt, the research checkpoint is kept, a sanitised
 diagnostic (`stage`, `status`, `error_type`, `request_id`, 200 characters of
-the API message, no prompt text) is stored in `jobs.checkpoint.api_error`
+the API message, the deploy's `COMMIT_REF`/`DEPLOY_ID`, no prompt text) is
+stored in `jobs.checkpoint.api_error`
 and `jobs.last_error`, `reports.status` becomes `failed`, the order becomes
 `failed` and the owner is alerted. Rate limits, 5xx and network errors keep
 the normal backoff. A refusal is non-retryable too.

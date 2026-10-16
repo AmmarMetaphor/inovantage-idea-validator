@@ -1,19 +1,26 @@
 /*
-  Compact GENERATION schemas sent to Anthropic as output_config.format, and
-  the explicit mapping from them to the application model in
+  GENERATION schemas: the shapes sent to Anthropic as output_config.format,
+  and the explicit mapping from them to the application model in
   report-schema.ts.
 
-  Why a separate schema: the API compiles the format into a grammar. The full
-  application model (nested objects, nullable unions, 13 $defs, eight levels
-  deep) made that grammar too large and the request failed with HTTP 400
-  "The compiled grammar is too large". These shapes are deliberately flat:
-  no unions, no enums, no nullable fields, few object shapes, shallow nesting.
-  Business constraints (lengths, counts, allowed labels, source ids) are
-  validated here on the server after generation, never by the grammar.
+  Why they look like this. The API compiles the format into a grammar and
+  rejects large ones with HTTP 400 "The compiled grammar is too large". Two
+  attempts failed live:
+    - the full application model (15 object shapes, 8 nullable unions,
+      13 $defs, depth 8)                                     → req_011Cg69DBbcWEcjBbUimXPtJ
+    - one flat object with ~62 properties across 5 shapes    → req_011Cg6CEUVVA1hXsnDuoXcHH
+  The published limits (24 optional, 16 union parameters) were not the
+  binding constraint; the internal limit tracks total property count. So the
+  report is now generated as several small, independent PARTS, each a single
+  flat object with at most 16 properties, no nested objects, no unions, no
+  enums, no optionals, and arrays no deeper than number[][]. Parts run in
+  parallel and are merged here.
 
-  Unknowns stay explicit: numeric inputs carry a `known` flag, dates use the
-  literal "unknown", and scores use 0 for "insufficient evidence"; the mapper
-  turns each into null in the application model. Nothing is invented.
+  Business rules (lengths, counts, labels, source ids) are enforced in the
+  mapping, never by the grammar. Unknowns stay explicit: a numeric input has a
+  `known` flag, a score of 0 means "insufficient evidence", and the mapper
+  turns each into null. Source URLs, titles, publishers and dates always come
+  from the research rows; the model only cites ids.
 */
 import { z } from 'zod';
 import type { ResearchSource } from './db/types';
@@ -28,53 +35,54 @@ import {
 } from './report-schema';
 
 /* ---------------------------------------------------------------------------
-   Generation schemas (what the model fills in)
+   Shared fragments
 --------------------------------------------------------------------------- */
 
-const MoneyInput = z.object({
-  /** false = not known; value is then ignored. */
-  known: z.boolean(),
-  value: z.number(),
-  unit: z.string(),
-  /** customer_input | assumption | evidence (validated server-side). */
-  basis: z.string(),
-  note: z.string(),
-});
-
-const Volumes = z.object({ low: z.number(), base: z.number(), high: z.number(), basis: z.string(), note: z.string() });
-
-/** A research source the report relies on, by its id in the research list. */
-const SourceUse = z.object({
-  id: z.number(),
-  used_for: z.string(),
-  /** Publication or data date as printed, or "unknown". */
-  date: z.string(),
-  geography: z.string(),
-  period: z.string(),
-  /** historical | forecast | other */
-  type: z.string(),
-});
-
-const Claim = z.object({
-  section: z.string(),
-  text: z.string(),
+/** Claims about the part's own content, as parallel arrays (4 properties). */
+const CLAIM_FIELDS = {
+  claim_texts: z.array(z.string()),
   /** evidence | assumption | customer_input | calculation */
-  kind: z.string(),
+  claim_kinds: z.array(z.string()),
   /** high | medium | low */
-  confidence: z.string(),
-  source_ids: z.array(z.number()),
-  date: z.string(),
-});
+  claim_confidences: z.array(z.string()),
+  /** Research source ids per claim; [] when none. */
+  claim_source_ids: z.array(z.array(z.number())),
+};
 
-export const StandardGenSchema = z.object({
+/** Financial inputs as parallel arrays over FINANCE_KEYS (5 properties). */
+export const FINANCE_KEYS = ['price', 'variable_cost', 'fixed_monthly', 'volume_low', 'volume_base', 'volume_high'] as const;
+const FINANCE_FIELDS = {
+  /** One flag per FINANCE_KEYS entry: false = nobody knows (value ignored). */
+  finance_known: z.array(z.boolean()),
+  finance_values: z.array(z.number()),
+  /** customer_input | assumption | evidence, per entry. */
+  finance_basis: z.array(z.string()),
+  finance_notes: z.array(z.string()),
+  price_unit: z.string(),
+};
+
+/* ---------------------------------------------------------------------------
+   Standard report: three parts
+--------------------------------------------------------------------------- */
+
+export const StandardVerdictPart = z.object({
   title: z.string(),
   idea_summary: z.string(),
-  /** Exactly one of the three verdict labels. */
   verdict: z.string(),
   verdict_explanation: z.string(),
-  /** Five scores in order: demand, competition, differentiation, financial_clarity, founder_fit. 1–5, or 0 = insufficient evidence. */
+  /** Five numbers in SCORECARD_IDS order; 1–5, or 0 = insufficient evidence. */
   scores: z.array(z.number()),
   score_notes: z.array(z.string()),
+  strengths: z.array(z.string()),
+  weaknesses: z.array(z.string()),
+  opportunities: z.array(z.string()),
+  threats: z.array(z.string()),
+  limitations: z.array(z.string()),
+  ...CLAIM_FIELDS,
+});
+
+export const StandardFinancePart = z.object({
+  ...FINANCE_FIELDS,
   /** evidence | scenario | none */
   chart_kind: z.string(),
   chart_title: z.string(),
@@ -82,16 +90,12 @@ export const StandardGenSchema = z.object({
   chart_note: z.string(),
   chart_labels: z.array(z.string()),
   chart_values: z.array(z.number()),
-  /** Parallel to chart_values; research source id per point, 0 = none. */
+  /** Research source id per point, 0 = none. */
   chart_source_ids: z.array(z.number()),
-  swot_strengths: z.array(z.string()),
-  swot_weaknesses: z.array(z.string()),
-  swot_opportunities: z.array(z.string()),
-  swot_threats: z.array(z.string()),
-  price: MoneyInput,
-  variable_cost: MoneyInput,
-  fixed_monthly: MoneyInput,
-  volumes: Volumes,
+  ...CLAIM_FIELDS,
+});
+
+export const StandardActionPart = z.object({
   risks: z.array(z.string()),
   risk_validations: z.array(z.string()),
   improvements: z.array(z.string()),
@@ -99,38 +103,68 @@ export const StandardGenSchema = z.object({
   experiment_budget: z.number(),
   experiment_duration: z.string(),
   experiment_success: z.string(),
-  sources_used: z.array(SourceUse),
-  limitations: z.array(z.string()),
-  claims: z.array(Claim),
-});
-export type StandardGen = z.infer<typeof StandardGenSchema>;
-
-const GenSection = z.object({
-  /** One of the nine fixed section ids. */
-  id: z.string(),
-  heading: z.string(),
-  paragraphs: z.array(z.string()),
-  bullets: z.array(z.string()),
-  /** Empty = no table. */
-  table_columns: z.array(z.string()),
-  table_rows: z.array(z.array(z.string())),
+  /** Research source ids the report relies on, with what each was used for. */
+  source_ids_used: z.array(z.number()),
+  source_uses: z.array(z.string()),
+  ...CLAIM_FIELDS,
 });
 
-export const DetailedGenSchema = z.object({
+export const STANDARD_PARTS = {
+  verdict: StandardVerdictPart,
+  finance: StandardFinancePart,
+  action: StandardActionPart,
+} as const;
+export type StandardParts = { [K in keyof typeof STANDARD_PARTS]: z.infer<(typeof STANDARD_PARTS)[K]> };
+
+/* ---------------------------------------------------------------------------
+   Detailed report: three section parts + one summary part
+--------------------------------------------------------------------------- */
+
+function sectionFields(n: 1 | 2) {
+  return {
+    [`s${n}_heading`]: z.string(),
+    [`s${n}_paragraphs`]: z.array(z.string()),
+    [`s${n}_bullets`]: z.array(z.string()),
+    /** Empty = no table. */
+    [`s${n}_table_columns`]: z.array(z.string()),
+    [`s${n}_table_rows`]: z.array(z.array(z.string())),
+  } as Record<`s${typeof n}_heading`, z.ZodString> & Record<`s${typeof n}_paragraphs` | `s${typeof n}_bullets` | `s${typeof n}_table_columns`, z.ZodArray<z.ZodString>> & Record<`s${typeof n}_table_rows`, z.ZodArray<z.ZodArray<z.ZodString>>>;
+}
+
+/** Two consecutive sections of the nine (the last part uses s1 only). */
+export const DetailedSectionsPart = z.object({ ...sectionFields(1), ...sectionFields(2), ...CLAIM_FIELDS });
+
+export const DetailedSummaryPart = z.object({
   title: z.string(),
   executive_summary: z.array(z.string()),
-  sections: z.array(GenSection),
-  price: MoneyInput,
-  variable_cost: MoneyInput,
-  fixed_monthly: MoneyInput,
-  volumes: Volumes,
+  ...FINANCE_FIELDS,
   sensitivity_changes: z.array(z.string()),
   sensitivity_effects: z.array(z.string()),
-  sources_used: z.array(SourceUse),
+  source_ids_used: z.array(z.number()),
+  source_uses: z.array(z.string()),
   limitations: z.array(z.string()),
-  claims: z.array(Claim),
+  ...CLAIM_FIELDS,
 });
-export type DetailedGen = z.infer<typeof DetailedGenSchema>;
+
+/** Which sections each detailed part writes, in order: 2+2+2+2+1. */
+export const DETAILED_SECTION_GROUPS: (typeof DETAILED_SECTION_IDS)[number][][] = [
+  DETAILED_SECTION_IDS.slice(0, 2),
+  DETAILED_SECTION_IDS.slice(2, 4),
+  DETAILED_SECTION_IDS.slice(4, 6),
+  DETAILED_SECTION_IDS.slice(6, 8),
+  DETAILED_SECTION_IDS.slice(8, 9),
+];
+
+export type DetailedParts = { sections: z.infer<typeof DetailedSectionsPart>[]; summary: z.infer<typeof DetailedSummaryPart> };
+
+/** Every schema that is sent to the API, for diagnostics and tests. */
+export const GENERATION_SCHEMAS = {
+  'standard.verdict': StandardVerdictPart,
+  'standard.finance': StandardFinancePart,
+  'standard.action': StandardActionPart,
+  'detailed.sections': DetailedSectionsPart,
+  'detailed.summary': DetailedSummaryPart,
+} as const;
 
 /* ---------------------------------------------------------------------------
    Mapping to the application model (server-side validation lives here)
@@ -144,102 +178,133 @@ export interface MappingDiagnostics {
 }
 
 type Basis = 'customer_input' | 'assumption' | 'evidence';
+type ClaimFields = z.infer<z.ZodObject<typeof CLAIM_FIELDS>>;
+type FinanceFields = z.infer<z.ZodObject<typeof FINANCE_FIELDS>>;
 
-function clip(s: string, max: number, field: string, d: MappingDiagnostics): string {
-  const t = s.trim();
+function newDiagnostics(): MappingDiagnostics {
+  return { truncated: [], droppedSourceIds: [], downgradedClaims: 0, normalised: [] };
+}
+
+function clip(s: string | undefined, max: number, field: string, d: MappingDiagnostics): string {
+  const t = (s ?? '').trim();
   if (t.length <= max) return t;
   d.truncated.push(field);
   return t.slice(0, Math.max(0, max - 1)).trimEnd() + '…';
 }
 
-function clipList(items: string[], max: number, maxLen: number, field: string, d: MappingDiagnostics): string[] {
-  return items.filter((s) => s.trim()).slice(0, max).map((s, i) => clip(s, maxLen, `${field}[${i}]`, d));
+function clipList(items: string[] | undefined, max: number, maxLen: number, field: string, d: MappingDiagnostics): string[] {
+  return (items ?? []).filter((s) => s && s.trim()).slice(0, max).map((s, i) => clip(s, maxLen, `${field}[${i}]`, d));
 }
 
-function basisOf(s: string, d: MappingDiagnostics, field: string): Basis {
-  const v = s.trim().toLowerCase().replace(/[\s-]+/g, '_');
+function basisOf(s: string | undefined, d: MappingDiagnostics, field: string): Basis {
+  const v = (s ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_');
   if (v === 'customer_input' || v === 'assumption' || v === 'evidence') return v;
-  d.normalised.push(`${field}:${s}`);
+  d.normalised.push(`${field}:${s ?? ''}`);
   return 'assumption';
 }
 
-function unknownToNull(s: string, max: number): string | null {
-  const t = s.trim();
+function unknownToNull(s: string | null | undefined, max: number): string | null {
+  const t = (s ?? '').trim();
   if (!t || /^(unknown|n\/a|none|null)$/i.test(t)) return null;
   return t.slice(0, max);
 }
 
-function money(m: StandardGen['price'], field: string, d: MappingDiagnostics, withUnit: true): { value: number | null; unit: string; basis: Basis; note: string };
-function money(m: StandardGen['price'], field: string, d: MappingDiagnostics, withUnit: false): { value: number | null; basis: Basis; note: string };
-function money(m: StandardGen['price'], field: string, d: MappingDiagnostics, withUnit: boolean) {
-  const value = m.known && Number.isFinite(m.value) ? m.value : null;
-  const base = { value, basis: basisOf(m.basis, d, `${field}.basis`), note: clip(m.note, 120, `${field}.note`, d) };
-  return withUnit ? { ...base, unit: clip(m.unit || 'sale', 30, `${field}.unit`, d) } : base;
-}
+/**
+ * Sources are numbered 1..n in the prompt (research order). The report keeps
+ * only cited ids that exist, renumbered 1..k in citation order. All
+ * provenance comes from the research row, never from the model.
+ */
+class SourceTable {
+  readonly renumber = new Map<number, number>();
+  readonly sources: StandardReport['sources'] = [];
+  constructor(private research: ResearchSource[], private max: number, private d: MappingDiagnostics) {}
 
-/** Research sources are numbered 1..n in the prompt; only those ids may be cited. */
-function sourceTable(research: ResearchSource[]) {
-  return (id: number) => (Number.isInteger(id) && id >= 1 && id <= research.length ? research[id - 1] : null);
-}
-
-function mapSources(uses: StandardGen['sources_used'], research: ResearchSource[], max: number, d: MappingDiagnostics): { sources: StandardReport['sources']; renumber: Map<number, number> } {
-  const lookup = sourceTable(research);
-  const renumber = new Map<number, number>();
-  const sources: StandardReport['sources'] = [];
-  for (const u of uses) {
-    const src = lookup(u.id);
-    if (!src || renumber.has(u.id)) {
-      if (!src) d.droppedSourceIds.push(u.id);
-      continue;
+  cite(id: number, usedFor = ''): number | null {
+    if (!Number.isInteger(id) || id < 1 || id > this.research.length) {
+      if (id !== 0) this.d.droppedSourceIds.push(id);
+      return null;
     }
-    if (sources.length >= max) break;
-    const index = sources.length + 1;
-    renumber.set(u.id, index);
-    const type = /forecast/i.test(u.type) ? 'forecast' : /historical/i.test(u.type) ? 'historical' : 'other';
-    sources.push({
+    const existing = this.renumber.get(id);
+    if (existing) {
+      if (usedFor && !this.sources[existing - 1].used_for) this.sources[existing - 1].used_for = clip(usedFor, 120, `sources[${existing}].used_for`, this.d);
+      return existing;
+    }
+    if (this.sources.length >= this.max) return null;
+    const src = this.research[id - 1];
+    const index = this.sources.length + 1;
+    this.renumber.set(id, index);
+    this.sources.push({
       index,
-      title: clip(src.title || src.url, 110, `sources[${index}].title`, d),
+      title: clip(src.title || src.url, 110, `sources[${index}].title`, this.d),
       url: src.url.slice(0, 300),
       publisher: src.publisher ? src.publisher.slice(0, 60) : null,
-      published_date: unknownToNull(u.date, 30) ?? (src.published_date ? src.published_date.slice(0, 30) : null),
-      geography: unknownToNull(u.geography, 40) ?? (src.geography ? src.geography.slice(0, 40) : null),
-      unit: src.unit ? src.unit.slice(0, 40) : null,
-      period: unknownToNull(u.period, 40) ?? (src.period ? src.period.slice(0, 40) : null),
-      claim_type: type,
-      used_for: clip(u.used_for, 120, `sources[${index}].used_for`, d),
+      published_date: unknownToNull(src.published_date ?? src.page_age, 30),
+      geography: unknownToNull(src.geography, 40),
+      unit: unknownToNull(src.unit, 40),
+      period: unknownToNull(src.period, 40),
+      claim_type: src.claim_type === 'historical' || src.claim_type === 'forecast' ? src.claim_type : 'other',
+      used_for: clip(usedFor, 120, `sources[${index}].used_for`, this.d),
     });
+    return index;
   }
-  return { sources, renumber };
+
+  /** Ensure a `used_for` on sources cited only from claims or chart points. */
+  finish(): StandardReport['sources'] {
+    for (const s of this.sources) if (!s.used_for) s.used_for = 'Cited in the report';
+    return this.sources;
+  }
 }
 
-function mapClaims(claims: StandardGen['claims'], renumber: Map<number, number>, max: number, d: MappingDiagnostics): StandardReport['claims'] {
+function mapClaims(part: ClaimFields, section: string, table: SourceTable, d: MappingDiagnostics): StandardReport['claims'] {
   const out: StandardReport['claims'] = [];
-  for (const c of claims.slice(0, max)) {
-    const ids = [...new Set(c.source_ids.map((id) => renumber.get(id)).filter((n): n is number => typeof n === 'number'))].slice(0, 4);
-    const dropped = c.source_ids.length - ids.length;
-    if (dropped > 0) d.droppedSourceIds.push(...c.source_ids.filter((id) => !renumber.has(id)));
-    let kind = c.kind.trim().toLowerCase().replace(/[\s-]+/g, '_');
+  part.claim_texts.forEach((text, i) => {
+    if (!text || !text.trim()) return;
+    const rawIds = part.claim_source_ids[i] ?? [];
+    const ids = [...new Set(rawIds.map((id) => table.cite(id)).filter((n): n is number => n !== null))].slice(0, 4);
+    let kind = (part.claim_kinds[i] ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_');
     if (!['evidence', 'assumption', 'customer_input', 'calculation'].includes(kind)) {
-      d.normalised.push(`claim.kind:${c.kind}`);
+      d.normalised.push(`claim.kind:${part.claim_kinds[i] ?? ''}`);
       kind = 'assumption';
     }
     if (kind === 'evidence' && ids.length === 0) {
       kind = 'assumption';
       d.downgradedClaims += 1;
     }
-    let confidence = c.confidence.trim().toLowerCase();
+    let confidence = (part.claim_confidences[i] ?? '').trim().toLowerCase();
     if (!['high', 'medium', 'low'].includes(confidence)) confidence = 'low';
-    if (!c.text.trim()) continue;
+    const first = ids[0] ? table.sources[ids[0] - 1] : null;
     out.push({
-      section_id: clip(c.section || 'summary', 40, 'claim.section', d),
-      text: clip(c.text, 320, 'claim.text', d),
+      section_id: section,
+      text: clip(text, 320, 'claim.text', d),
       kind: kind as StandardReport['claims'][number]['kind'],
       confidence: confidence as 'high' | 'medium' | 'low',
       source_indexes: ids,
-      evidence_date: unknownToNull(c.date, 40),
+      evidence_date: first?.published_date ?? null,
     });
-  }
+  });
   return out;
+}
+
+function mapFinance(part: FinanceFields, d: MappingDiagnostics): StandardReport['financial_inputs'] {
+  const at = (i: number) => {
+    const known = part.finance_known[i] === true;
+    const raw = part.finance_values[i];
+    const value = known && typeof raw === 'number' && Number.isFinite(raw) ? raw : null;
+    return { value, basis: basisOf(part.finance_basis[i], d, `finance_basis[${i}]`), note: clip(part.finance_notes[i], 120, `finance_notes[${i}]`, d) };
+  };
+  const unit = clip(part.price_unit || 'sale', 30, 'price_unit', d);
+  const price = at(0);
+  const variable = at(1);
+  const fixed = at(2);
+  const vol = (i: number) => Math.max(0, at(i).value ?? 0);
+  const volBasis = basisOf(part.finance_basis[4] ?? part.finance_basis[3], d, 'finance_basis[volume]');
+  const volNote = clip([part.finance_notes[3], part.finance_notes[4], part.finance_notes[5]].filter((n) => n && n.trim()).join(' ') || 'Monthly volume scenarios.', 160, 'finance_notes[volume]', d);
+  return {
+    price: { ...price, unit },
+    variable_cost: { ...variable, unit },
+    fixed_monthly: fixed,
+    volumes: { low: vol(3), base: vol(4), high: vol(5), basis: volBasis, note: volNote },
+  };
 }
 
 function verdictLabel(s: string, d: MappingDiagnostics): (typeof VERDICTS)[number] {
@@ -250,113 +315,127 @@ function verdictLabel(s: string, d: MappingDiagnostics): (typeof VERDICTS)[numbe
   return 'Refine before investing';
 }
 
-export function mapStandardGeneration(gen: StandardGen, research: ResearchSource[], unknowns: string[]): { report: StandardReport; diagnostics: MappingDiagnostics } {
-  const d: MappingDiagnostics = { truncated: [], droppedSourceIds: [], downgradedClaims: 0, normalised: [] };
-  const { sources, renumber } = mapSources(gen.sources_used, research, 8, d);
+export function mapStandardParts(parts: StandardParts, research: ResearchSource[], unknowns: string[]): { report: StandardReport; diagnostics: MappingDiagnostics } {
+  const d = newDiagnostics();
+  const table = new SourceTable(research, 8, d);
+  const { verdict: v, finance: f, action: a } = parts;
+
+  // Sources the model says it relied on come first, in its order.
+  a.source_ids_used.forEach((id, i) => table.cite(id, a.source_uses[i] ?? ''));
 
   const scorecard = SCORECARD_IDS.map((id, i) => {
-    const raw = gen.scores[i];
+    const raw = v.scores[i];
     const score = Number.isInteger(raw) && raw >= 1 && raw <= 5 ? raw : null;
     if (raw !== undefined && score === null && raw !== 0) d.normalised.push(`score[${i}]:${raw}`);
-    const note = clip(gen.score_notes[i] ?? '', 130, `score_notes[${i}]`, d);
+    const note = clip(v.score_notes[i], 130, `score_notes[${i}]`, d);
     return { id, score, note: note || (score === null ? 'Insufficient evidence to rate.' : 'No note provided.') };
   });
 
-  const kindRaw = gen.chart_kind.trim().toLowerCase();
+  const kindRaw = f.chart_kind.trim().toLowerCase();
   let chartKind: 'evidence' | 'scenario' | 'none' = kindRaw === 'evidence' ? 'evidence' : kindRaw === 'scenario' ? 'scenario' : 'none';
-  const series = gen.chart_labels.slice(0, 6).map((label, i) => {
-    const sid = gen.chart_source_ids[i] ?? 0;
-    const idx = renumber.get(sid) ?? null;
-    if (sid && idx === null) d.droppedSourceIds.push(sid);
-    return { label: clip(label, 24, `chart_labels[${i}]`, d), value: Number.isFinite(gen.chart_values[i]) ? gen.chart_values[i] : 0, source_index: idx };
-  }).filter((_, i) => Number.isFinite(gen.chart_values[i]));
-  // An "evidence" chart whose points cite no valid source is not evidence.
+  const series = f.chart_labels
+    .slice(0, 6)
+    .map((label, i) => ({ label: clip(label, 24, `chart_labels[${i}]`, d), value: f.chart_values[i], source_index: table.cite(f.chart_source_ids[i] ?? 0) }))
+    .filter((p): p is { label: string; value: number; source_index: number | null } => typeof p.value === 'number' && Number.isFinite(p.value));
   if (chartKind === 'evidence' && !series.some((s) => s.source_index !== null)) {
     chartKind = series.length ? 'scenario' : 'none';
     d.normalised.push('chart_kind:evidence-without-sources');
   }
   if (series.length === 0) chartKind = 'none';
 
-  const risksRaw = gen.risks.map((r, i) => ({ risk: r, validation_method: gen.risk_validations[i] ?? '' })).filter((r) => r.risk.trim());
-  const risks = risksRaw.slice(0, 3).map((r, i) => ({ risk: clip(r.risk, 110, `risks[${i}]`, d), validation_method: clip(r.validation_method || 'Validate directly with potential customers.', 130, `risk_validations[${i}]`, d) }));
+  const risks = a.risks
+    .map((r, i) => ({ risk: r, validation_method: a.risk_validations[i] ?? '' }))
+    .filter((r) => r.risk && r.risk.trim())
+    .slice(0, 3)
+    .map((r, i) => ({ risk: clip(r.risk, 110, `risks[${i}]`, d), validation_method: clip(r.validation_method || 'Validate directly with potential customers.', 130, `risk_validations[${i}]`, d) }));
 
-  const limitations = clipList(gen.limitations, 4, 130, 'limitations', d);
+  const limitations = clipList(v.limitations, 4, 130, 'limitations', d);
   for (const u of unknowns) if (limitations.length < 4 && !limitations.some((l) => l.toLowerCase().includes(u.toLowerCase().slice(0, 12)))) limitations.push(clip(`Not provided by the customer: ${u}.`, 130, 'limitations.unknown', d));
-  if (limitations.length === 0) limitations.push(sources.length ? 'Local figures were limited; some statements rest on assumptions.' : 'No retrievable sources were found; statements rest on assumptions and customer inputs.');
+  if (limitations.length === 0) limitations.push(research.length ? 'Local figures were limited; some statements rest on assumptions.' : 'No retrievable sources were found; statements rest on assumptions and customer inputs.');
 
-  const report: StandardReport = {
-    title: clip(gen.title, 80, 'title', d) || 'Idea validation report',
-    idea_summary: clip(gen.idea_summary, 160, 'idea_summary', d) || 'Summary not provided.',
-    verdict: { label: verdictLabel(gen.verdict, d), explanation: clip(gen.verdict_explanation, 600, 'verdict_explanation', d) || 'No explanation was generated.' },
-    scorecard,
-    chart: { kind: chartKind, title: clip(gen.chart_title, 80, 'chart_title', d), unit: clip(gen.chart_unit, 30, 'chart_unit', d), series: chartKind === 'none' ? [] : series, note: clip(gen.chart_note, 200, 'chart_note', d) },
-    swot: {
-      strengths: clipList(gen.swot_strengths, 3, 90, 'swot_strengths', d),
-      weaknesses: clipList(gen.swot_weaknesses, 3, 90, 'swot_weaknesses', d),
-      opportunities: clipList(gen.swot_opportunities, 3, 90, 'swot_opportunities', d),
-      threats: clipList(gen.swot_threats, 3, 90, 'swot_threats', d),
-    },
-    financial_inputs: {
-      price: money(gen.price, 'price', d, true),
-      variable_cost: money(gen.variable_cost, 'variable_cost', d, true),
-      fixed_monthly: money(gen.fixed_monthly, 'fixed_monthly', d, false),
-      volumes: { low: Math.max(0, gen.volumes.low || 0), base: Math.max(0, gen.volumes.base || 0), high: Math.max(0, gen.volumes.high || 0), basis: basisOf(gen.volumes.basis, d, 'volumes.basis'), note: clip(gen.volumes.note, 160, 'volumes.note', d) },
-    },
-    risks: risks.length ? risks : [{ risk: 'No risks were generated.', validation_method: 'Talk to ten potential customers before spending.' }],
-    improvements: clipList(gen.improvements, 5, 150, 'improvements', d),
-    experiment: {
-      description: clip(gen.experiment_description, 220, 'experiment_description', d) || 'No experiment was generated.',
-      budget_amount: Math.max(0, Number.isFinite(gen.experiment_budget) ? gen.experiment_budget : 0),
-      duration: clip(gen.experiment_duration, 40, 'experiment_duration', d),
-      success_criterion: clip(gen.experiment_success, 160, 'experiment_success', d) || 'Not specified.',
-    },
-    sources,
-    limitations,
-    claims: mapClaims(gen.claims, renumber, 30, d),
-  };
-  if (report.improvements.length < 3) {
-    while (report.improvements.length < 3) report.improvements.push('Validate the next most uncertain assumption with real customers before spending.');
+  const claims = [...mapClaims(v, 'verdict', table, d), ...mapClaims(f, 'financials', table, d), ...mapClaims(a, 'risks_actions', table, d)].slice(0, 30);
+
+  const improvements = clipList(a.improvements, 5, 150, 'improvements', d);
+  while (improvements.length < 3) {
+    improvements.push('Validate the next most uncertain assumption with real customers before spending.');
     d.normalised.push('improvements:padded');
   }
+
+  const report: StandardReport = {
+    title: clip(v.title, 80, 'title', d) || 'Idea validation report',
+    idea_summary: clip(v.idea_summary, 160, 'idea_summary', d) || 'Summary not provided.',
+    verdict: { label: verdictLabel(v.verdict, d), explanation: clip(v.verdict_explanation, 600, 'verdict_explanation', d) || 'No explanation was generated.' },
+    scorecard,
+    chart: { kind: chartKind, title: clip(f.chart_title, 80, 'chart_title', d), unit: clip(f.chart_unit, 30, 'chart_unit', d), series: chartKind === 'none' ? [] : series, note: clip(f.chart_note, 200, 'chart_note', d) },
+    swot: {
+      strengths: clipList(v.strengths, 3, 90, 'strengths', d),
+      weaknesses: clipList(v.weaknesses, 3, 90, 'weaknesses', d),
+      opportunities: clipList(v.opportunities, 3, 90, 'opportunities', d),
+      threats: clipList(v.threats, 3, 90, 'threats', d),
+    },
+    financial_inputs: mapFinance(f, d),
+    risks: risks.length ? risks : [{ risk: 'No risks were generated.', validation_method: 'Talk to ten potential customers before spending.' }],
+    improvements,
+    experiment: {
+      description: clip(a.experiment_description, 220, 'experiment_description', d) || 'No experiment was generated.',
+      budget_amount: Math.max(0, Number.isFinite(a.experiment_budget) ? a.experiment_budget : 0),
+      duration: clip(a.experiment_duration, 40, 'experiment_duration', d),
+      success_criterion: clip(a.experiment_success, 160, 'experiment_success', d) || 'Not specified.',
+    },
+    sources: table.finish(),
+    limitations,
+    claims,
+  };
   return { report: StandardReportSchema.parse(report), diagnostics: d };
 }
 
-export function mapDetailedGeneration(gen: DetailedGen, research: ResearchSource[]): { report: DetailedReport; diagnostics: MappingDiagnostics } {
-  const d: MappingDiagnostics = { truncated: [], droppedSourceIds: [], downgradedClaims: 0, normalised: [] };
-  const { sources, renumber } = mapSources(gen.sources_used, research, 12, d);
-  const byId = new Map(gen.sections.map((s) => [s.id.trim().toLowerCase(), s]));
-  const sections = DETAILED_SECTION_IDS.map((id) => {
-    const s = byId.get(id);
-    if (!s) d.normalised.push(`section:${id}:missing`);
-    const columns = (s?.table_columns ?? []).slice(0, 6).map((c, i) => clip(c, 40, `${id}.table_columns[${i}]`, d));
-    const rows = (s?.table_rows ?? []).slice(0, 14).map((r) => r.slice(0, columns.length).map((c) => clip(c, 120, `${id}.table_rows`, d)));
-    return {
-      id,
-      heading: clip(s?.heading || id.replace(/_/g, ' '), 90, `${id}.heading`, d),
-      paragraphs: (s?.paragraphs ?? (s ? [] : ['This section could not be generated.'])).slice(0, 8).map((p, i) => clip(p, 1500, `${id}.paragraphs[${i}]`, d)),
-      bullets: (s?.bullets ?? []).slice(0, 12).map((b, i) => clip(b, 300, `${id}.bullets[${i}]`, d)),
-      table: columns.length >= 2 && rows.length ? { columns, rows } : null,
-    };
+export function mapDetailedParts(parts: DetailedParts, research: ResearchSource[]): { report: DetailedReport; diagnostics: MappingDiagnostics } {
+  const d = newDiagnostics();
+  const table = new SourceTable(research, 12, d);
+  const s = parts.summary;
+  s.source_ids_used.forEach((id, i) => table.cite(id, s.source_uses[i] ?? ''));
+
+  const sections: DetailedReport['sections'] = [];
+  DETAILED_SECTION_GROUPS.forEach((group, g) => {
+    const part = parts.sections[g] as Record<string, unknown> | undefined;
+    group.forEach((id, j) => {
+      const n = j + 1;
+      const get = <T,>(key: string, fallback: T): T => (part && part[`s${n}_${key}`] !== undefined ? (part[`s${n}_${key}`] as T) : fallback);
+      if (!part) d.normalised.push(`section:${id}:missing`);
+      const columns = get<string[]>('table_columns', []).slice(0, 6).map((c, i) => clip(c, 40, `${id}.table_columns[${i}]`, d));
+      const rows = get<string[][]>('table_rows', []).slice(0, 14).map((r) => r.slice(0, columns.length).map((c) => clip(c, 120, `${id}.table_rows`, d)));
+      sections.push({
+        id,
+        heading: clip(get<string>('heading', ''), 90, `${id}.heading`, d) || id.replace(/_/g, ' '),
+        paragraphs: (part ? get<string[]>('paragraphs', []) : ['This section could not be generated.']).slice(0, 8).map((p, i) => clip(p, 1500, `${id}.paragraphs[${i}]`, d)),
+        bullets: get<string[]>('bullets', []).slice(0, 12).map((b, i) => clip(b, 300, `${id}.bullets[${i}]`, d)),
+        table: columns.length >= 2 && rows.length ? { columns, rows } : null,
+      });
+    });
   });
-  const report: DetailedReport = {
-    title: clip(gen.title, 80, 'title', d) || 'Detailed report',
-    executive_summary: clipList(gen.executive_summary, 7, 260, 'executive_summary', d),
-    sections,
-    financial_inputs: {
-      price: money(gen.price, 'price', d, true),
-      variable_cost: money(gen.variable_cost, 'variable_cost', d, true),
-      fixed_monthly: money(gen.fixed_monthly, 'fixed_monthly', d, false),
-      volumes: { low: Math.max(0, gen.volumes.low || 0), base: Math.max(0, gen.volumes.base || 0), high: Math.max(0, gen.volumes.high || 0), basis: basisOf(gen.volumes.basis, d, 'volumes.basis'), note: clip(gen.volumes.note, 160, 'volumes.note', d) },
-    },
-    sensitivity: gen.sensitivity_changes.slice(0, 8).map((c, i) => ({ change: clip(c, 80, `sensitivity_changes[${i}]`, d), effect: clip(gen.sensitivity_effects[i] ?? '', 160, `sensitivity_effects[${i}]`, d) })),
-    sources,
-    limitations: clipList(gen.limitations, 8, 200, 'limitations', d),
-    claims: mapClaims(gen.claims, renumber, 80, d),
-  };
-  while (report.executive_summary.length < 3) {
-    report.executive_summary.push('See the sections below.');
+
+  const claims = [
+    ...parts.sections.flatMap((part, g) => mapClaims(part, DETAILED_SECTION_GROUPS[g]?.[0] ?? 'sections', table, d)),
+    ...mapClaims(s, 'summary', table, d),
+  ].slice(0, 80);
+
+  const executive_summary = clipList(s.executive_summary, 7, 260, 'executive_summary', d);
+  while (executive_summary.length < 3) {
+    executive_summary.push('See the sections below.');
     d.normalised.push('executive_summary:padded');
   }
-  if (report.limitations.length === 0) report.limitations.push('No limitations were declared by the researcher.');
+  const limitations = clipList(s.limitations, 8, 200, 'limitations', d);
+  if (limitations.length === 0) limitations.push('No limitations were declared by the researcher.');
+
+  const report: DetailedReport = {
+    title: clip(s.title, 80, 'title', d) || 'Detailed report',
+    executive_summary,
+    sections,
+    financial_inputs: mapFinance(s, d),
+    sensitivity: s.sensitivity_changes.slice(0, 8).map((c, i) => ({ change: clip(c, 80, `sensitivity_changes[${i}]`, d), effect: clip(s.sensitivity_effects[i], 160, `sensitivity_effects[${i}]`, d) })),
+    sources: table.finish(),
+    limitations,
+    claims,
+  };
   return { report: DetailedReportSchema.parse(report), diagnostics: d };
 }

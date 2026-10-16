@@ -162,10 +162,12 @@ Read `docs/BACKEND.md` before touching `netlify/` or `supabase/`.
   content is returned only when the upgrade order is paid.
 - **Reports.** `netlify/lib/report-schema.ts` holds the Zod schemas with
   editorial limits; it is the application model and is **never sent to
-  Anthropic**. Composition sends the compact `netlify/lib/generation-schema.ts`
-  shapes (flat, no unions/enums/nullables, no tools in the request) and maps
-  them explicitly; keep `tests/generation.test.ts` passing (`npm run
-  schema:dump` shows what is sent). An API 4xx on compose is non-retryable
+  Anthropic**. Composition runs several small parallel requests, one flat
+  `netlify/lib/generation-schema.ts` part each (≤ 16 properties, no nested
+  objects/unions/enums/optionals, no tools) and merges them explicitly;
+  keep `tests/generation.test.ts` passing (`npm run schema:dump` shows what
+  is sent). A part whose grammar is still rejected is regenerated once
+  without a grammar and validated; any other API 4xx is non-retryable
   (`GenerationRequestError`) with a sanitised diagnostic in the checkpoint; `finance.ts` computes every scenario figure in code;
   `pdf.ts` renders the two-page standard and flowing detailed PDFs. Never let
   the model write financial tables or statistics without a listed source.

@@ -20,8 +20,9 @@ import { STEPS, optionLabel, visibleFields } from '../../src/questionnaire/schem
 import { STEPS_V1 } from '../../src/questionnaire/schema-v1';
 import type { Answers, Step } from '../../src/questionnaire/types';
 import type { ResearchSource } from './db/types';
-import { DetailedGenSchema, StandardGenSchema, mapDetailedGeneration, mapStandardGeneration, type MappingDiagnostics } from './generation-schema';
-import { DETAILED_SECTION_IDS, SCORECARD_IDS, VERDICTS, type DetailedReport, type StandardReport } from './report-schema';
+import { z } from 'zod';
+import { DETAILED_SECTION_GROUPS, FINANCE_KEYS, GENERATION_SCHEMAS, mapDetailedParts, mapStandardParts, type MappingDiagnostics, type StandardParts } from './generation-schema';
+import { SCORECARD_IDS, VERDICTS, type DetailedReport, type StandardReport } from './report-schema';
 
 export interface Brief {
   orderRef: string;
@@ -49,6 +50,8 @@ export interface ComposeOutput<T> {
   usage: { input_tokens: number; output_tokens: number };
   /** What server-side validation changed when mapping the generation output. */
   mapping?: MappingDiagnostics;
+  /** Parts that had to be generated without a grammar (see composePart). */
+  fallbacks?: string[];
 }
 
 export interface ReportGenerator {
@@ -190,36 +193,47 @@ Rules: never state a statistic you did not read on the page; if you searched and
 
 Cover: demand indicators for the stated city/region; competitors and their typical pricing; typical start-up and running costs for this kind of business; regulation, licences or insurance; seasonality and risks. Finish with the FINDING lines first, then the GAP lines.`;
 
-const SYSTEM_STANDARD = `You write concise, evidence-based feasibility verdicts for one business idea in one primary market. The output fills a two-page report, so every field has a hard length limit; write tightly, in plain British English, no hype, no guarantees, no probability of success.
+const EVIDENCE_RULES = `Evidence discipline: use only the supplied research sources, cited by their id [n]. Never invent a competitor, growth rate, market size, source or citation. National or global figures do not prove local demand; say so when that is all the evidence shows. Never include the customer's email address.
 
-Output shape (every field is required; use an empty string or empty array when there is nothing to say, never invent content to fill a field):
+Claims: every factual statement you rely on in this part goes in the parallel arrays claim_texts, claim_kinds ("evidence" when read in a source, otherwise "assumption", "customer_input" or "calculation"), claim_confidences ("high", "medium" or "low") and claim_source_ids (the research ids read for that claim, [] when none). The four arrays have the same length.
+
+Every field is required. Use an empty string or empty array when there is nothing to say; never pad a field with invented content.`;
+
+const SYSTEM_STANDARD = `You write concise, evidence-based feasibility verdicts for one business idea in one primary market. The output fills a two-page report, so every field has a hard length limit; write tightly, in plain British English, no hype, no guarantees, no probability of success. The report is produced in parts; each request asks for one part only.
+
+${EVIDENCE_RULES}`;
+
+const SYSTEM_DETAILED = `You write detailed, evidence-based feasibility reports for one business idea in one primary market, for a founder who has already received a two-page standard verdict and paid for depth. Plain British English, direct, no hype, no guarantees, no probability of success. The report is produced in parts; each request asks for one part only. For sizing, describe the methodology and show the arithmetic with its assumptions rather than asserting a market size. Distinguish historical facts from third-party forecasts.
+
+${EVIDENCE_RULES}`;
+
+const FINANCE_INSTRUCTION = `Financial inputs as six parallel arrays in this order: ${FINANCE_KEYS.join(', ')} (price and variable_cost per sale, fixed_monthly per month, volumes as monthly sales for a low, base and high case). finance_known[i] is true when a figure can be given (a customer figure, a sourced figure or a labelled assumption) and false when nobody knows; finance_values[i] is the figure in the stated currency (ignored when not known); finance_basis[i] is "customer_input", "evidence" or "assumption"; finance_notes[i] explains it in ≤ 20 words. If the customer said NOT SURE, give a labelled assumption rather than a blank. price_unit is "sale", "hour", "month" or similar. Do NOT compute the scenario table; the system computes it.`;
+
+const PART_INSTRUCTIONS: Record<keyof StandardParts, string> = {
+  verdict: `Part 1 of 3: verdict, scorecard, SWOT and limitations.
 - title ≤ 10 words; idea_summary ≤ 25 words.
 - verdict: exactly one of ${VERDICTS.map((v) => `"${v}"`).join(', ')}. verdict_explanation ≤ 85 words, grounded in the sources and the customer's answers.
 - scores: exactly five integers in this order: ${SCORECARD_IDS.join(', ')}. Use 1–5, or 0 when the evidence is insufficient to rate. score_notes: five notes in the same order, ≤ 18 words each.
-- Chart: chart_kind is "evidence" only when a listed source supplies the series; then chart_source_ids holds that source's id for each point (same length as chart_values). Otherwise "scenario" (label the basis in chart_note) or "none" (state the data gap in chart_note, leave labels/values empty). At most 6 points; chart_labels ≤ 3 words each; chart_title ≤ 10 words; chart_unit is the unit of the values.
-- swot_*: up to 3 items each, ≤ 14 words each.
-- price, variable_cost (both per sale) and fixed_monthly: known=true with the value in the stated currency, or known=false when nobody knows (then still give basis and note). basis is "customer_input", "evidence" or "assumption"; if the customer said NOT SURE, use known=true with a labelled assumption and explain it in note (≤ 20 words). unit is "sale", "hour", "month" or similar. volumes: low/base/high monthly sales with basis and note. Do NOT compute the scenario table; the system computes it.
+- strengths, weaknesses, opportunities, threats: up to 3 items each, ≤ 14 words each.
+- limitations: up to 4 items, ≤ 20 words each: what could not be found or verified, including every input the customer marked NOT SURE.`,
+  finance: `Part 2 of 3: financial inputs and the evidence chart.
+${FINANCE_INSTRUCTION}
+Chart: chart_kind is "evidence" only when a listed source supplies the series; then chart_source_ids holds that source's id for each point (same length as chart_values). Otherwise "scenario" (label the basis in chart_note) or "none" (state the data gap in chart_note and leave labels and values empty). At most 6 points; chart_labels ≤ 3 words each; chart_title ≤ 10 words; chart_unit is the unit of the values; chart_note ≤ 30 words.`,
+  action: `Part 3 of 3: risks, improvements, experiment and sources.
 - risks: exactly 3, ≤ 18 words each; risk_validations: the cheap way to test each risk, same order, ≤ 20 words each.
 - improvements: exactly 5 specific, prioritised changes, ≤ 22 words each.
-- experiment_*: one cheap test with a budget (number, stated currency), a duration and a measurable success criterion.
-- sources_used: one entry per research source you relied on, by its id [n] from the supplied list. Never invent a source or cite an id that is not in the list; type is "historical", "forecast" or "other"; date is the publication or data date as printed, or "unknown".
-- limitations: up to 4 items, ≤ 20 words each: what could not be found or verified, including every input the customer marked NOT SURE.
-- claims: every factual statement you relied on (≤ 30). kind is "evidence" (then source_ids lists the research ids read), "assumption", "customer_input" or "calculation"; confidence high/medium/low; date "unknown" if not applicable.
+- experiment_description ≤ 35 words: one cheap test; experiment_budget as a number in the stated currency; experiment_duration (e.g. "4 weeks"); experiment_success: a measurable criterion ≤ 25 words.
+- source_ids_used: the ids of every research source the report relies on (at most 8), with source_uses giving what each was used for (≤ 15 words, same order). Only ids from the supplied list.`,
+};
 
-Evidence discipline: use only the supplied research sources. Never invent a competitor, growth rate, market size or citation. National or global figures do not prove local demand; say so when that is all the evidence shows. Never include the customer's email address.`;
-
-const SYSTEM_DETAILED = `You write detailed, evidence-based feasibility reports for one business idea in one primary market, for a founder who has already received a two-page standard verdict and paid for depth. Plain British English, direct, no hype, no guarantees, no probability of success.
-
-Output shape (every field is required; use empty strings/arrays rather than invented content):
-- executive_summary: 3–7 bullet sentences.
-- sections: exactly nine, with these ids in this order: ${DETAILED_SECTION_IDS.join(', ')}. Each has a heading, paragraphs (≤ 8), bullets (≤ 12) and an optional table: table_columns (2–6 column names) with table_rows (each row the same length as the columns), or both empty for no table. Use tables for competitor comparison, cost assumptions and the roadmap.
-- price, variable_cost (per sale) and fixed_monthly: known=true with the value in the stated currency, or known=false when nobody knows; basis "customer_input", "evidence" or "assumption"; note explains the assumption. volumes: low/base/high monthly sales with basis and note. The system computes the scenario table.
-- sensitivity_changes (e.g. "price −10%", "volume −25%", "cost +20%") with sensitivity_effects in words, same order.
-- sources_used: one entry per research source relied on, by its id [n] from the supplied list; never invent a source or an id; type "historical", "forecast" or "other"; date as printed or "unknown".
-- limitations: every gap, ≤ 8 items.
-- claims: every factual statement you relied on (≤ 80), kind "evidence" (with source_ids), "assumption", "customer_input" or "calculation"; confidence high/medium/low.
-
-Evidence discipline is identical to the standard report: cite only supplied sources; distinguish historical facts from third-party forecasts; never invent figures. For sizing, describe the methodology and show the arithmetic with its assumptions rather than asserting a market size. Never include the customer's email address.`;
+const DETAILED_PART_INSTRUCTIONS = {
+  sections: (ids: readonly string[], partNo: number, partCount: number) => `Part ${partNo} of ${partCount}: ${ids.length === 1 ? `one section. Write section s1 = "${ids[0]}" and leave every s2_* field empty.` : `two sections. Write section s1 = "${ids[0]}" and s2 = "${ids[1]}".`} For each section: a heading (≤ 12 words), paragraphs (≤ 8, each ≤ 220 words), bullets (≤ 12, each ≤ 40 words) and an optional table: table_columns (2–6 column names) with table_rows (each row has one cell per column), or both empty for no table. Use tables for competitor comparison, cost assumptions and the roadmap.`,
+  summary: `Final part: title (≤ 10 words), executive_summary (3–7 bullet sentences, ≤ 40 words each), financial inputs, sensitivity, sources and limitations.
+${FINANCE_INSTRUCTION}
+sensitivity_changes (e.g. "price −10%", "volume −25%", "cost +20%", up to 8) with sensitivity_effects in words (≤ 25 words each, same order).
+source_ids_used: the ids of every research source the report relies on (at most 12), with source_uses giving what each was used for (≤ 15 words, same order). Only ids from the supplied list.
+limitations: every gap, up to 8 items, ≤ 30 words each.`,
+};
 
 const USER_LOCATION: Record<string, { country: string; timezone: string }> = {
   UK: { country: 'GB', timezone: 'Europe/London' },
@@ -241,15 +255,30 @@ function sourceBlock(sources: ResearchSource[]): string {
    Anthropic implementation
 --------------------------------------------------------------------------- */
 
-/** The exact output formats sent to the API (see scripts/dump-generation-schema.mts). */
-export const STANDARD_FORMAT = zodOutputFormat(StandardGenSchema);
-export const DETAILED_FORMAT = zodOutputFormat(DetailedGenSchema);
+/** The exact output formats sent to the API, one per part (see scripts/dump-generation-schema.mts). */
+export const GENERATION_FORMATS = {
+  'standard.verdict': zodOutputFormat(GENERATION_SCHEMAS['standard.verdict']),
+  'standard.finance': zodOutputFormat(GENERATION_SCHEMAS['standard.finance']),
+  'standard.action': zodOutputFormat(GENERATION_SCHEMAS['standard.action']),
+  'detailed.sections': zodOutputFormat(GENERATION_SCHEMAS['detailed.sections']),
+  'detailed.summary': zodOutputFormat(GENERATION_SCHEMAS['detailed.summary']),
+} as const;
+
+/** Text of the API's grammar-size rejection; a part that hits it is regenerated without a grammar. */
+const GRAMMAR_TOO_LARGE = /compiled grammar is too large|too complex for compilation/i;
+
+interface PartResult<T> {
+  value: T;
+  model: string;
+  usage: { input_tokens: number; output_tokens: number };
+  fallback: boolean;
+}
 
 export class AnthropicGenerator implements ReportGenerator {
   readonly name = 'anthropic';
   private client: Anthropic;
-  constructor(apiKey: string, private model: string) {
-    this.client = new Anthropic({ apiKey, timeout: 10 * 60 * 1000, maxRetries: 2 });
+  constructor(apiKey: string, private model: string, clientOptions: Partial<ConstructorParameters<typeof Anthropic>[0]> = {}) {
+    this.client = new Anthropic({ apiKey, timeout: 10 * 60 * 1000, maxRetries: 2, ...clientOptions });
   }
 
   async research(brief: Brief, scope: 'standard' | 'detailed'): Promise<ResearchOutput> {
@@ -303,36 +332,80 @@ export class AnthropicGenerator implements ReportGenerator {
 
   async composeStandard(brief: Brief, sources: ResearchSource[], notes: string, opts: { tighten: number }): Promise<ComposeOutput<StandardReport>> {
     const tighten = opts.tighten > 0 ? `\n\nIMPORTANT: a previous draft overflowed two pages. Use about ${Math.max(40, 70 - opts.tighten * 15)}% of every length limit this time.` : '';
-    const message = await finalMessageOrClassify(this.client.messages.stream({
-      model: this.model,
-      max_tokens: 20000,
-      system: [{ type: 'text', text: SYSTEM_STANDARD, cache_control: { type: 'ephemeral' } }],
-      // No tools here: the only grammar is the compact output format.
-      output_config: { effort: 'high', format: STANDARD_FORMAT },
-      messages: [{ role: 'user', content: `Order reference: ${brief.orderRef}\n${briefBlock(brief)}\n\nResearch sources (cite by id):\n${sourceBlock(sources) || '(none found)'}\n\nResearch notes:\n${notes || '(none)'}\n\nWrite the standard report in the required structure.${tighten}` }],
-    }), 'compose_standard');
-    if (message.stop_reason === 'max_tokens') throw new Error('Standard composition hit max_tokens; retrying.');
-    if (!message.parsed_output) throw new Error('Standard composition returned no parseable output; retrying.');
-    const gen = StandardGenSchema.parse(message.parsed_output);
-    const { report, diagnostics } = mapStandardGeneration(gen, sources, brief.unknowns);
-    return { report, model: message.model, usage: { input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens }, mapping: diagnostics };
+    const shared = `Order reference: ${brief.orderRef}\n${briefBlock(brief)}\n\nResearch sources (cite by id):\n${sourceBlock(sources) || '(none found)'}\n\nResearch notes:\n${notes || '(none)'}`;
+    const [verdict, finance, action] = await Promise.all([
+      this.composePart('compose_standard', 'standard.verdict', SYSTEM_STANDARD, shared, PART_INSTRUCTIONS.verdict + tighten, 8000),
+      this.composePart('compose_standard', 'standard.finance', SYSTEM_STANDARD, shared, PART_INSTRUCTIONS.finance + tighten, 8000),
+      this.composePart('compose_standard', 'standard.action', SYSTEM_STANDARD, shared, PART_INSTRUCTIONS.action + tighten, 8000),
+    ]);
+    const parts = [verdict, finance, action];
+    const { report, diagnostics } = mapStandardParts({ verdict: verdict.value, finance: finance.value, action: action.value }, sources, brief.unknowns);
+    return { report, model: verdict.model, usage: sumUsage(parts), mapping: diagnostics, fallbacks: fallbackNames(['standard.verdict', 'standard.finance', 'standard.action'], parts) };
   }
 
   async composeDetailed(brief: Brief, sources: ResearchSource[], notes: string, standard: StandardReport | null): Promise<ComposeOutput<DetailedReport>> {
-    const message = await finalMessageOrClassify(this.client.messages.stream({
-      model: this.model,
-      max_tokens: 32000,
-      system: [{ type: 'text', text: SYSTEM_DETAILED, cache_control: { type: 'ephemeral' } }],
-      output_config: { effort: 'high', format: DETAILED_FORMAT },
-      messages: [{ role: 'user', content: `Order reference: ${brief.orderRef}\n${briefBlock(brief)}\n\nStandard report verdict already delivered: ${standard ? `${standard.verdict.label}. ${standard.verdict.explanation}` : '(not available)'}\n\nResearch sources (cite by id):\n${sourceBlock(sources) || '(none found)'}\n\nResearch notes:\n${notes || '(none)'}\n\nWrite the detailed report in the required structure.` }],
-    }), 'compose_detailed');
-    if (message.stop_reason === 'max_tokens') throw new Error('Detailed composition hit max_tokens; retrying.');
-    if (!message.parsed_output) throw new Error('Detailed composition returned no parseable output; retrying.');
-    const gen = DetailedGenSchema.parse(message.parsed_output);
-    const { report, diagnostics } = mapDetailedGeneration(gen, sources);
-    return { report, model: message.model, usage: { input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens }, mapping: diagnostics };
+    const shared = `Order reference: ${brief.orderRef}\n${briefBlock(brief)}\n\nStandard report verdict already delivered: ${standard ? `${standard.verdict.label}. ${standard.verdict.explanation}` : '(not available)'}\n\nResearch sources (cite by id):\n${sourceBlock(sources) || '(none found)'}\n\nResearch notes:\n${notes || '(none)'}`;
+    const partCount = DETAILED_SECTION_GROUPS.length + 1;
+    const [sectionParts, summary] = await Promise.all([
+      Promise.all(DETAILED_SECTION_GROUPS.map((ids, i) => this.composePart('compose_detailed', 'detailed.sections', SYSTEM_DETAILED, shared, DETAILED_PART_INSTRUCTIONS.sections(ids, i + 1, partCount), 10000))),
+      this.composePart('compose_detailed', 'detailed.summary', SYSTEM_DETAILED, shared, DETAILED_PART_INSTRUCTIONS.summary, 8000),
+    ]);
+    const parts: PartResult<unknown>[] = [...sectionParts, summary];
+    const { report, diagnostics } = mapDetailedParts({ sections: sectionParts.map((p) => p.value), summary: summary.value }, sources);
+    return { report, model: summary.model, usage: sumUsage(parts), mapping: diagnostics, fallbacks: fallbackNames([...DETAILED_SECTION_GROUPS.map((_, i) => `detailed.sections.${i + 1}`), 'detailed.summary'], parts) };
   }
 
+  /**
+   * One bounded request: a small flat schema as output_config.format and no
+   * tools. If the API still rejects that grammar as too large, the same part
+   * is regenerated once without a grammar (plain JSON, the schema quoted in
+   * the prompt) and validated with the same Zod schema; any other API
+   * rejection stays non-retryable.
+   */
+  private async composePart<K extends keyof typeof GENERATION_SCHEMAS>(stage: 'compose_standard' | 'compose_detailed', key: K, system: string, shared: string, instruction: string, maxTokens: number): Promise<PartResult<z.infer<(typeof GENERATION_SCHEMAS)[K]>>> {
+    const schema = GENERATION_SCHEMAS[key];
+    const systemBlocks = [{ type: 'text' as const, text: system, cache_control: { type: 'ephemeral' as const } }];
+    const content = (extra = '') => [
+      { type: 'text' as const, text: shared, cache_control: { type: 'ephemeral' as const } },
+      { type: 'text' as const, text: `${instruction}${extra}` },
+    ];
+    try {
+      const message = await finalMessageOrClassify(this.client.messages.stream({
+        model: this.model,
+        max_tokens: maxTokens,
+        system: systemBlocks,
+        output_config: { effort: 'high', format: GENERATION_FORMATS[key] },
+        messages: [{ role: 'user', content: content() }],
+      }), stage);
+      if (message.stop_reason === 'max_tokens') throw new Error(`${key} hit max_tokens; retrying.`);
+      if (!message.parsed_output) throw new Error(`${key} returned no parseable output; retrying.`);
+      return { value: schema.parse(message.parsed_output) as z.infer<(typeof GENERATION_SCHEMAS)[K]>, model: message.model, usage: { input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens }, fallback: false };
+    } catch (err) {
+      if (!(err instanceof GenerationRequestError) || err.diagnostic.status !== 400 || !GRAMMAR_TOO_LARGE.test(err.diagnostic.message)) throw err;
+    }
+    // Grammar fallback: no output_config.format; the schema is quoted and the
+    // output is validated here instead.
+    const jsonSchema = JSON.stringify((GENERATION_FORMATS[key] as unknown as { schema: unknown }).schema);
+    let lastError = '';
+    const usage = { input_tokens: 0, output_tokens: 0 };
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const message = await finalMessageOrClassify(this.client.messages.stream({
+        model: this.model,
+        max_tokens: maxTokens,
+        system: systemBlocks,
+        output_config: { effort: 'high' },
+        messages: [{ role: 'user', content: content(`\n\nRespond with exactly one JSON object and nothing else (no prose, no code fences) that validates against this JSON Schema:\n${jsonSchema}${lastError ? `\n\nYour previous answer was rejected: ${lastError}` : ''}`) }],
+      }), stage);
+      usage.input_tokens += message.usage.input_tokens;
+      usage.output_tokens += message.usage.output_tokens;
+      if (message.stop_reason === 'max_tokens') throw new Error(`${key} (fallback) hit max_tokens; retrying.`);
+      const text = message.content.filter((b): b is Extract<typeof b, { type: 'text' }> => b.type === 'text').map((b) => b.text).join('\n');
+      const parsed = schema.safeParse(extractJson(text));
+      if (parsed.success) return { value: parsed.data as z.infer<(typeof GENERATION_SCHEMAS)[K]>, model: message.model, usage, fallback: true };
+      lastError = parsed.error.issues.slice(0, 5).map((i) => `${i.path.join('.')}: ${i.message}`).join('; ').slice(0, 500);
+    }
+    throw new Error(`${key} (fallback) did not produce valid JSON: ${lastError}`);
+  }
 }
 
 /** Awaits a stream's final message; API rejections become GenerationRequestError (non-retryable) with a sanitised diagnostic. */
@@ -345,6 +418,26 @@ async function finalMessageOrClassify<M extends { stop_reason: string | null; st
   }
   if (message.stop_reason === 'refusal') throw new NonRetryableGenerationError(`${stage === 'research' ? 'Research' : 'Composition'} refused (${message.stop_details?.category ?? 'unspecified'}).`);
   return message;
+}
+
+function sumUsage(parts: PartResult<unknown>[]): { input_tokens: number; output_tokens: number } {
+  return parts.reduce((acc, p) => ({ input_tokens: acc.input_tokens + p.usage.input_tokens, output_tokens: acc.output_tokens + p.usage.output_tokens }), { input_tokens: 0, output_tokens: 0 });
+}
+
+function fallbackNames(names: string[], parts: PartResult<unknown>[]): string[] {
+  return names.filter((_, i) => parts[i]?.fallback);
+}
+
+/** The first balanced JSON object in a text response, or the text itself. */
+export function extractJson(text: string): unknown {
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  const candidate = start >= 0 && end > start ? text.slice(start, end + 1) : text;
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    return null;
+  }
 }
 
 /** Evidence claims must cite listed sources; downgrade uncited ones to assumptions rather than fail. */

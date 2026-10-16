@@ -23,6 +23,7 @@ import type { Logger } from './log';
 import type { Mailer } from './mailer';
 import { renderDetailedPdf, renderStandardPdf, type PdfMeta } from './pdf';
 import { DetailedReportSchema, StandardReportSchema, type StandardReport } from './report-schema';
+import { buildInfo } from './env';
 import { buildBrief, GenerationRequestError, NonRetryableGenerationError, type ReportGenerator } from './research';
 import { mintAccessToken } from './tokens';
 
@@ -124,7 +125,7 @@ export async function runJob(deps: JobDeps, jobId: string, workerId: string): Pr
           // The API rejected the request itself; an unchanged retry cannot
           // succeed. Keep the research checkpoint, record a sanitised
           // diagnostic where the owner can see it, and mark the report failed.
-          checkpoint = { ...checkpoint, api_error: err.diagnostic as unknown as Json };
+          checkpoint = { ...checkpoint, api_error: { ...err.diagnostic, build: buildInfo() } as unknown as Json };
           await db.checkpointJob(job.id, workerId, stage, checkpoint).catch((inner) => jlog.warn('job.checkpoint_failed', { err: inner }));
           await db.upsertReport(order.id, { status: 'failed', content: null }).catch((inner) => jlog.warn('job.report_fail_mark_failed', { err: inner }));
           jlog.error('job.request_rejected', { stage, diagnostic: err.diagnostic });
@@ -249,6 +250,7 @@ async function runStage(deps: JobDeps, ctx: StageCtx): Promise<Json> {
       let model: string;
       let usage: { input_tokens: number; output_tokens: number };
       let claims: { section_id: string; text: string; kind: 'evidence' | 'assumption' | 'customer_input' | 'calculation'; confidence: 'high' | 'medium' | 'low'; source_indexes: number[] }[];
+      let fallbacks: string[] = [];
       if (tier === 'detailed') {
         let standard: StandardReport | null = null;
         if (order.parent_order_id) {
@@ -258,6 +260,7 @@ async function runStage(deps: JobDeps, ctx: StageCtx): Promise<Json> {
         }
         const out = await deps.generator.composeDetailed(brief, sources, notes, standard);
         if (out.mapping) ctx.log.info('compose.mapping', { tier, ...summariseMapping(out.mapping) });
+        fallbacks = out.fallbacks ?? [];
         content = out.report as unknown as Json;
         model = out.model;
         usage = out.usage;
@@ -265,6 +268,7 @@ async function runStage(deps: JobDeps, ctx: StageCtx): Promise<Json> {
       } else {
         const out = await deps.generator.composeStandard(brief, sources, notes, { tighten: Number(checkpoint.tighten ?? 0) });
         if (out.mapping) ctx.log.info('compose.mapping', { tier, ...summariseMapping(out.mapping) });
+        fallbacks = out.fallbacks ?? [];
         content = out.report as unknown as Json;
         verdict = out.report.verdict.label;
         model = out.model;
@@ -287,7 +291,10 @@ async function runStage(deps: JobDeps, ctx: StageCtx): Promise<Json> {
         report.id,
         claims.map((c, i) => ({ section_id: c.section_id, position: i, claim_text: c.text, kind: c.kind, confidence: c.confidence, source_urls: c.source_indexes.map(srcByIndex).filter((u): u is string => !!u) })),
       );
-      return checkpoint;
+      // A part generated without a grammar is a signal the owner should see
+      // (the schema was still rejected as too large); the output was validated.
+      if (fallbacks.length) ctx.log.warn('compose.grammar_fallback', { tier, parts: fallbacks });
+      return fallbacks.length ? { ...checkpoint, compose_fallbacks: fallbacks } : checkpoint;
     }
     case 'render': {
       const report = await db.getReport(order.id);

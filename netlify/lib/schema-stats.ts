@@ -21,7 +21,19 @@ export function schemaStats(name: string, schema: ZodType) {
     } else if (ch === '}' || ch === ']') depth -= 1;
   }
   const enumValues = (s.match(/"enum":\[[^\]]*\]/g) ?? []).reduce((n, e) => n + e.split(',').length, 0);
-  const result = { name, bytes: s.length, maxLength: count('maxLength'), minLength: count('minLength'), minItems: count('minItems'), maxItems: count('maxItems'), minimum: count('minimum'), maximum: count('maximum'), enums: count('enum'), enumValues, anyOf: count('anyOf'), objects: count('properties'), nesting: max };
+  const parsed = JSON.parse(s) as unknown;
+  let properties = 0;
+  const walk = (node: unknown) => {
+    if (Array.isArray(node)) node.forEach(walk);
+    else if (node && typeof node === 'object') {
+      for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+        if (k === 'properties' && v && typeof v === 'object') properties += Object.keys(v as object).length;
+        walk(v);
+      }
+    }
+  };
+  walk(parsed);
+  const result = { name, bytes: s.length, properties, maxLength: count('maxLength'), minLength: count('minLength'), minItems: count('minItems'), maxItems: count('maxItems'), minimum: count('minimum'), maximum: count('maximum'), enums: count('enum'), enumValues, anyOf: count('anyOf'), objects: count('properties'), nesting: max };
   return { result, json: s };
 }
 

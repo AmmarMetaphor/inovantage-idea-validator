@@ -1,7 +1,7 @@
 /*
   GET /api/health — configuration readiness, names only, no values.
 */
-import { ConfigError, loadEnv, type EnvGroup } from '../lib/env';
+import { buildInfo, ConfigError, loadEnv, type EnvGroup } from '../lib/env';
 import { netlifyFunction } from '../lib/function';
 import { json } from '../lib/http';
 
@@ -39,6 +39,7 @@ export default netlifyFunction('health', async () => {
       pilot: { enabled: pilotEnabled, ready: pilotReady },
       checks: 'configuration presence only; no external connectivity is tested',
       context: process.env.CONTEXT ?? 'dev',
+      build: buildInfo(),
       generator: process.env.REPORT_GENERATOR ?? 'anthropic',
       configured,
       missing: [...missing],

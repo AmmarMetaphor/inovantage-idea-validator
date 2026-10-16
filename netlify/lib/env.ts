@@ -19,6 +19,15 @@ export class ConfigError extends Error {
   }
 }
 
+/** Deploy metadata Netlify injects (COMMIT_REF, DEPLOY_ID); never secrets. */
+export function buildInfo(src: Source = process.env): { commit: string | null; deploy_id: string | null; context: string } {
+  const get = (k: string) => {
+    const v = src[k];
+    return typeof v === 'string' && v.trim() ? v.trim() : null;
+  };
+  return { commit: get('COMMIT_REF'), deploy_id: get('DEPLOY_ID'), context: get('CONTEXT') ?? 'dev' };
+}
+
 export interface Env {
   /** Netlify deploy context: production | deploy-preview | branch-deploy | dev */
   context: string;

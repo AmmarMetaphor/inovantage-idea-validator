@@ -79,7 +79,8 @@ Delivery allowlist: `support@metaphorconsultants.com` is built in. Only set
 ## 5. Pre-flight
 
 Open `https://<deploy>/api/health`. Expect `pilot.enabled: true` and
-`pilot.ready: true`. `ready` (the full launch check) will be `false` because
+`pilot.ready: true`. `build.commit` is the git commit Netlify deployed
+(`COMMIT_REF`): compare it with the commit you expect before running a pilot. `ready` (the full launch check) will be `false` because
 Stripe is absent; that is correct for the pilot. The health check confirms
 variable presence only, not that the services accept the keys.
 
@@ -180,7 +181,13 @@ the `where` clauses below refuse a job that is live or already finished.
    Expected for the grammar failure: `status = dead` (or `queued` with
    attempts near 5 on an old deploy), `stage = compose`,
    `research_done = true`, `order_status = failed`, `report_status = failed`
-   or `generating`.
+   or `generating`. `api_error.build.commit` (present from the second fix
+   onwards) tells you which deploy produced the failure; `api_error.request_id`
+   is the Anthropic request id for support.
+
+   Do this only after `/api/health` shows `build.commit` equal to the commit
+   carrying the fix. Re-queuing a job on the old deploy burns an attempt and
+   repeats the same 400.
 
 2. Put the order back to a fulfillable status. A pilot order goes back to
    `authorised`, a Stripe order to `paid`; the `where` guards keep the
@@ -231,7 +238,10 @@ the `where` clauses below refuse a job that is live or already finished.
 5. The scheduled dispatcher picks the job up within five minutes
    (`dispatch.done` → `dispatched: 1`); the worker logs `job.claimed` with
    `stage: compose`, then `job.stage_timing` for `compose`, `render` and
-   `deliver`. Research is not repeated.
+   `deliver`. Research is not repeated. A `compose.grammar_fallback` line
+   means a part was generated without a grammar (still validated); a
+   second `job.request_rejected` means the fix did not take and the
+   diagnostic in `checkpoint.api_error` is what to send to support.
 
 ### Measuring a pilot run
 
