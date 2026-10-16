@@ -1,8 +1,10 @@
 /*
-  Structured report formats. The generator must produce exactly these shapes;
-  the PDF renderers, the web report and the claims ledger read from them.
-  Editorial limits are enforced here so the standard report fits two A4 pages
-  without shrinking type or dropping sources.
+  APPLICATION report model: what is stored in reports.content and what the
+  PDF renderers, the web report and the claims ledger read. Editorial limits
+  live here and are enforced server-side.
+
+  This schema is NOT sent to Anthropic. Generation uses the compact shapes in
+  generation-schema.ts, which are mapped into this model explicitly.
 */
 import { z } from 'zod';
 
@@ -77,9 +79,10 @@ export const StandardReportSchema = z.object({
     fixed_monthly: z.object({ value: z.number().nullable(), basis: Basis, note: z.string().max(120) }),
     volumes: z.object({ low: z.number().min(0), base: z.number().min(0), high: z.number().min(0), basis: Basis, note: z.string().max(160) }),
   }),
-  risks: z.array(z.object({ risk: z.string().min(1).max(110), validation_method: z.string().min(1).max(130) })).length(3),
-  /** Five specific, prioritised improvements, ≤ 22 words each. */
-  improvements: z.array(z.string().min(1).max(150)).length(5),
+  /** Up to three risks; the generator is asked for exactly three. */
+  risks: z.array(z.object({ risk: z.string().min(1).max(110), validation_method: z.string().min(1).max(130) })).min(1).max(3),
+  /** Three to five specific, prioritised improvements, ≤ 22 words each. */
+  improvements: z.array(z.string().min(1).max(150)).min(3).max(5),
   experiment: z.object({
     description: z.string().min(1).max(220),
     budget_amount: z.number().min(0),

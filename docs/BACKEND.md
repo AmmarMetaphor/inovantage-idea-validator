@@ -113,8 +113,45 @@ Fulfilment rules the code enforces:
 Set `ANTHROPIC_API_KEY`. The default model is `claude-opus-5-5`
 (`ANTHROPIC_MODEL` overrides). Research uses the server-side web search tool
 restricted to the customer's market; composition uses structured outputs
-against `netlify/lib/report-schema.ts`. A refusal is recorded as a
-non-retryable failure and alerts the owner.
+with **no tools** in the request.
+
+**Two schemas, one mapping.** The API compiles `output_config.format` into a
+grammar, and the full application model (`netlify/lib/report-schema.ts`:
+nested objects, nullable unions, enums, 13 `$defs`) was rejected with HTTP 400
+"The compiled grammar is too large". Composition therefore sends the compact
+shapes in `netlify/lib/generation-schema.ts` (`StandardGenSchema`,
+`DetailedGenSchema`: flat objects, plain string/number arrays, no unions, no
+enums, no nullable fields, five or six object shapes) and
+`mapStandardGeneration` / `mapDetailedGeneration` turn the result into the
+application model. Every business rule lives in that mapping, on the server:
+
+- lengths and counts are clamped to the editorial limits (two-page PDF);
+- labels (verdict, basis, claim kind, confidence, section ids) are
+  normalised, with conservative fallbacks recorded in the mapping diagnostics;
+- sources are cited **by research id** (`[n]` in the prompt) and resolved
+  from `research_sources`; ids that do not exist are dropped, an "evidence"
+  claim or chart point without a valid id is downgraded, and the URL, title
+  and publisher always come from the research row, never from the model;
+- unknowns stay explicit: `known=false`, `"unknown"` dates and `0` scores
+  become `null`; nothing is filled in with invented values.
+
+`npm run schema:dump` prints the exact JSON Schema the SDK sends (add
+`--print` for the full document) with size metrics; `tests/generation.test.ts`
+fails if a schema grows unions, enums, length constraints or more object
+shapes.
+
+**Request rejections are not retried.** A 400/401/403/404/413/422 from the
+API (`classifyApiError` in `research.ts`) becomes `GenerationRequestError`:
+the job dies on that attempt, the research checkpoint is kept, a sanitised
+diagnostic (`stage`, `status`, `error_type`, `request_id`, 200 characters of
+the API message, no prompt text) is stored in `jobs.checkpoint.api_error`
+and `jobs.last_error`, `reports.status` becomes `failed`, the order becomes
+`failed` and the owner is alerted. Rate limits, 5xx and network errors keep
+the normal backoff. A refusal is non-retryable too.
+
+**Timings.** `jobs.checkpoint.timings` records wall-clock milliseconds and
+run counts per stage (`confirm`, `research`, `compose`, `render`, `deliver`),
+and the worker logs `job.stage_timing` per stage.
 
 For staging without API spend, `REPORT_GENERATOR=stub` produces a clearly
 labelled placeholder. It is refused when `CONTEXT=production`.
@@ -263,12 +300,9 @@ before navigating let the guard redirect to question 1.
 - The standard report must render to exactly two A4 pages. If it does not,
   the runner clears the draft and re-runs compose with a "tighten" hint (up
   to twice) before failing; `reports.page_count` records the result.
-- To re-run a dead job after fixing the cause:
-
-  ```sql
-  update jobs set status='queued', attempts=0, run_after=now(), last_error=null where id='<job id>';
-  update orders set status='paid', failed_reason=null where id='<order id>';
-  ```
+- To resume **one** dead job from its checkpoint after fixing the cause, see
+  "Resuming one failed job" in `docs/PILOT.md`. Never bulk-reset jobs and
+  never delete `research_sources`: the compose stage re-reads them.
 
 ## Privacy and logging
 

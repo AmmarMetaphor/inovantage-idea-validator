@@ -12,7 +12,7 @@
   StubGenerator: deterministic placeholder for local/staging runs, refused in
   production by env.ts, and labelled as not research in every output.
 */
-import Anthropic from '@anthropic-ai/sdk';
+import Anthropic, { APIError } from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { CURRENCIES, MARKETS } from '../../src/config/product';
 import { asArray, asBool, asEstimate, asString } from '../../src/questionnaire/helpers';
@@ -20,7 +20,8 @@ import { STEPS, optionLabel, visibleFields } from '../../src/questionnaire/schem
 import { STEPS_V1 } from '../../src/questionnaire/schema-v1';
 import type { Answers, Step } from '../../src/questionnaire/types';
 import type { ResearchSource } from './db/types';
-import { DetailedReportSchema, StandardReportSchema, type DetailedReport, type StandardReport } from './report-schema';
+import { DetailedGenSchema, StandardGenSchema, mapDetailedGeneration, mapStandardGeneration, type MappingDiagnostics } from './generation-schema';
+import { DETAILED_SECTION_IDS, SCORECARD_IDS, VERDICTS, type DetailedReport, type StandardReport } from './report-schema';
 
 export interface Brief {
   orderRef: string;
@@ -46,6 +47,8 @@ export interface ComposeOutput<T> {
   report: T;
   model: string;
   usage: { input_tokens: number; output_tokens: number };
+  /** What server-side validation changed when mapping the generation output. */
+  mapping?: MappingDiagnostics;
 }
 
 export interface ReportGenerator {
@@ -61,6 +64,59 @@ export class NonRetryableGenerationError extends Error {
     super(message);
     this.name = 'NonRetryableGenerationError';
   }
+}
+
+/** Sanitised record of a failed API request: never includes prompt text, answers or keys. */
+export interface RequestDiagnostic {
+  stage: 'research' | 'compose_standard' | 'compose_detailed';
+  status: number | null;
+  error_type: string | null;
+  request_id: string | null;
+  /** First 200 characters of the API's own error message. */
+  message: string;
+  at: string;
+}
+
+/**
+ * The API rejected the request itself (HTTP 4xx other than rate limits).
+ * Re-sending an unchanged request cannot succeed, so the job must not retry.
+ * The best-known case is HTTP 400 "The compiled grammar is too large".
+ */
+export class GenerationRequestError extends NonRetryableGenerationError {
+  constructor(message: string, readonly diagnostic: RequestDiagnostic) {
+    super(message);
+    this.name = 'GenerationRequestError';
+  }
+}
+
+/** Reasons the API gives for rejecting the request shape, matched case-insensitively. */
+const REQUEST_SHAPE_ERRORS = [/compiled grammar is too large/i, /invalid_request_error/i, /schema/i, /output_config/i, /output_format/i];
+
+/**
+ * Classify an error from the Anthropic SDK. 400/401/403/404/413/422 cannot
+ * be fixed by retrying the same request; 408/409/429/5xx and network errors
+ * can, and the job runner's backoff handles those. The diagnostic is
+ * sanitised: status, type, request id and a message prefix only.
+ */
+export function classifyApiError(err: unknown, stage: RequestDiagnostic['stage']): Error {
+  if (err instanceof NonRetryableGenerationError) return err;
+  if (!(err instanceof APIError)) return err instanceof Error ? err : new Error(String(err));
+  const status = typeof err.status === 'number' ? err.status : null;
+  const body = err.error && typeof err.error === 'object' && 'error' in err.error ? (err.error as { error?: { message?: string; type?: string } }).error : undefined;
+  const rawMessage = body?.message || err.message || 'unknown error';
+  const diagnostic: RequestDiagnostic = {
+    stage,
+    status,
+    error_type: err.type ?? body?.type ?? null,
+    request_id: err.requestID ?? null,
+    message: String(rawMessage).replace(/\s+/g, ' ').slice(0, 200),
+    at: new Date().toISOString(),
+  };
+  const nonRetryable = status !== null && [400, 401, 403, 404, 413, 422].includes(status);
+  if (!nonRetryable) return err;
+  const shape = REQUEST_SHAPE_ERRORS.some((re) => re.test(diagnostic.message) || (diagnostic.error_type ? re.test(diagnostic.error_type) : false));
+  const label = status === 400 && /compiled grammar is too large/i.test(diagnostic.message) ? 'grammar_too_large' : shape ? 'request_rejected' : 'client_error';
+  return new GenerationRequestError(`${stage} request rejected by the API (${label}, HTTP ${status}${diagnostic.request_id ? `, ${diagnostic.request_id}` : ''}): ${diagnostic.message}`, diagnostic);
 }
 
 /* ---------------------------------------------------------------------------
@@ -134,24 +190,36 @@ Rules: never state a statistic you did not read on the page; if you searched and
 
 Cover: demand indicators for the stated city/region; competitors and their typical pricing; typical start-up and running costs for this kind of business; regulation, licences or insurance; seasonality and risks. Finish with the FINDING lines first, then the GAP lines.`;
 
-const SYSTEM_STANDARD = `You write concise, evidence-based feasibility verdicts for one business idea in one primary market. The output is a two-page report, so every field has a hard length limit; write tightly, in plain British English, no hype, no guarantees, no probability of success.
+const SYSTEM_STANDARD = `You write concise, evidence-based feasibility verdicts for one business idea in one primary market. The output fills a two-page report, so every field has a hard length limit; write tightly, in plain British English, no hype, no guarantees, no probability of success.
 
-Evidence discipline:
-- Use only the supplied research sources. Each source you cite must appear in "sources" with its URL, publisher, date (or null), geography, unit, period and claim_type (historical or forecast). Never invent a competitor, growth rate, market size or citation.
-- An "evidence" claim must list source_indexes. Anything not read in a source is "assumption", "customer_input" or "calculation".
-- National or global figures do not prove local demand; say so when that is all the evidence shows.
-- The chart: use kind "evidence" only when a listed source supplies the series (put its source_index on each point). If not, use kind "scenario" and label the basis in note, or kind "none" with the data gap in note.
-- financial_inputs: give price, cost per sale, fixed monthly cost and low/base/high monthly volumes with a basis and note each. If the customer said "not sure", provide a labelled assumption and say why. Do NOT compute the scenario table; the system computes it.
-- scorecard: score 1–5 for each of demand, competition, differentiation, financial_clarity, founder_fit, or null for insufficient evidence; note ≤ 18 words.
-- verdict.label: "Worth testing", "Refine before investing" or "Reconsider the current approach"; explanation ≤ 85 words, grounded in the sources and the customer's answers.
-- limitations: list what could not be found or verified, including every input the customer marked NOT SURE.
-- Never include the customer's email address.`;
+Output shape (every field is required; use an empty string or empty array when there is nothing to say, never invent content to fill a field):
+- title ≤ 10 words; idea_summary ≤ 25 words.
+- verdict: exactly one of ${VERDICTS.map((v) => `"${v}"`).join(', ')}. verdict_explanation ≤ 85 words, grounded in the sources and the customer's answers.
+- scores: exactly five integers in this order: ${SCORECARD_IDS.join(', ')}. Use 1–5, or 0 when the evidence is insufficient to rate. score_notes: five notes in the same order, ≤ 18 words each.
+- Chart: chart_kind is "evidence" only when a listed source supplies the series; then chart_source_ids holds that source's id for each point (same length as chart_values). Otherwise "scenario" (label the basis in chart_note) or "none" (state the data gap in chart_note, leave labels/values empty). At most 6 points; chart_labels ≤ 3 words each; chart_title ≤ 10 words; chart_unit is the unit of the values.
+- swot_*: up to 3 items each, ≤ 14 words each.
+- price, variable_cost (both per sale) and fixed_monthly: known=true with the value in the stated currency, or known=false when nobody knows (then still give basis and note). basis is "customer_input", "evidence" or "assumption"; if the customer said NOT SURE, use known=true with a labelled assumption and explain it in note (≤ 20 words). unit is "sale", "hour", "month" or similar. volumes: low/base/high monthly sales with basis and note. Do NOT compute the scenario table; the system computes it.
+- risks: exactly 3, ≤ 18 words each; risk_validations: the cheap way to test each risk, same order, ≤ 20 words each.
+- improvements: exactly 5 specific, prioritised changes, ≤ 22 words each.
+- experiment_*: one cheap test with a budget (number, stated currency), a duration and a measurable success criterion.
+- sources_used: one entry per research source you relied on, by its id [n] from the supplied list. Never invent a source or cite an id that is not in the list; type is "historical", "forecast" or "other"; date is the publication or data date as printed, or "unknown".
+- limitations: up to 4 items, ≤ 20 words each: what could not be found or verified, including every input the customer marked NOT SURE.
+- claims: every factual statement you relied on (≤ 30). kind is "evidence" (then source_ids lists the research ids read), "assumption", "customer_input" or "calculation"; confidence high/medium/low; date "unknown" if not applicable.
+
+Evidence discipline: use only the supplied research sources. Never invent a competitor, growth rate, market size or citation. National or global figures do not prove local demand; say so when that is all the evidence shows. Never include the customer's email address.`;
 
 const SYSTEM_DETAILED = `You write detailed, evidence-based feasibility reports for one business idea in one primary market, for a founder who has already received a two-page standard verdict and paid for depth. Plain British English, direct, no hype, no guarantees, no probability of success.
 
-Produce exactly nine sections with these ids in order: market_opportunity, customer_segments, competitors, pricing_route_to_market, cost_assumptions, financial_scenarios, sensitivity_risks, roadmap, sources_limitations. Use tables where they help (competitor comparison, cost assumptions, roadmap).
+Output shape (every field is required; use empty strings/arrays rather than invented content):
+- executive_summary: 3–7 bullet sentences.
+- sections: exactly nine, with these ids in this order: ${DETAILED_SECTION_IDS.join(', ')}. Each has a heading, paragraphs (≤ 8), bullets (≤ 12) and an optional table: table_columns (2–6 column names) with table_rows (each row the same length as the columns), or both empty for no table. Use tables for competitor comparison, cost assumptions and the roadmap.
+- price, variable_cost (per sale) and fixed_monthly: known=true with the value in the stated currency, or known=false when nobody knows; basis "customer_input", "evidence" or "assumption"; note explains the assumption. volumes: low/base/high monthly sales with basis and note. The system computes the scenario table.
+- sensitivity_changes (e.g. "price −10%", "volume −25%", "cost +20%") with sensitivity_effects in words, same order.
+- sources_used: one entry per research source relied on, by its id [n] from the supplied list; never invent a source or an id; type "historical", "forecast" or "other"; date as printed or "unknown".
+- limitations: every gap, ≤ 8 items.
+- claims: every factual statement you relied on (≤ 80), kind "evidence" (with source_ids), "assumption", "customer_input" or "calculation"; confidence high/medium/low.
 
-Evidence discipline is identical to the standard report: cite only supplied sources, each with URL, publisher, date, geography, unit, period and claim_type; mark everything else as assumption, customer_input or calculation; distinguish historical facts from third-party forecasts; never invent figures. For sizing, describe the methodology and show the arithmetic with its assumptions rather than asserting a market size. financial_inputs follow the same rules as the standard report and the system computes the scenario table. sensitivity: list the changes (price −10%, volume −25%, cost +20%…) and their effect in words. Be explicit about every gap in sources_limitations. Never include the customer's email address.`;
+Evidence discipline is identical to the standard report: cite only supplied sources; distinguish historical facts from third-party forecasts; never invent figures. For sizing, describe the methodology and show the arithmetic with its assumptions rather than asserting a market size. Never include the customer's email address.`;
 
 const USER_LOCATION: Record<string, { country: string; timezone: string }> = {
   UK: { country: 'GB', timezone: 'Europe/London' },
@@ -173,6 +241,10 @@ function sourceBlock(sources: ResearchSource[]): string {
    Anthropic implementation
 --------------------------------------------------------------------------- */
 
+/** The exact output formats sent to the API (see scripts/dump-generation-schema.mts). */
+export const STANDARD_FORMAT = zodOutputFormat(StandardGenSchema);
+export const DETAILED_FORMAT = zodOutputFormat(DetailedGenSchema);
+
 export class AnthropicGenerator implements ReportGenerator {
   readonly name = 'anthropic';
   private client: Anthropic;
@@ -190,8 +262,7 @@ export class AnthropicGenerator implements ReportGenerator {
       tools: [{ type: 'web_search_20260209', name: 'web_search', max_uses: scope === 'detailed' ? 16 : 10, user_location: { type: 'approximate', country: loc.country, timezone: loc.timezone } }],
       messages: [{ role: 'user', content: `${briefBlock(brief)}\n\nScope: ${scope === 'detailed' ? 'detailed report (go deeper on competitors, pricing, costs, segments and sizing inputs)' : 'two-page standard verdict'}. Gather the evidence described in your instructions.` }],
     });
-    const message = await stream.finalMessage();
-    if (message.stop_reason === 'refusal') throw new NonRetryableGenerationError(`Research refused (${message.stop_details?.category ?? 'unspecified'}).`);
+    const message = await finalMessageOrClassify(stream, 'research');
     const retrievedAt = new Date().toISOString();
     const found = new Map<string, ResearchSource>();
     let notes = '';
@@ -232,38 +303,48 @@ export class AnthropicGenerator implements ReportGenerator {
 
   async composeStandard(brief: Brief, sources: ResearchSource[], notes: string, opts: { tighten: number }): Promise<ComposeOutput<StandardReport>> {
     const tighten = opts.tighten > 0 ? `\n\nIMPORTANT: a previous draft overflowed two pages. Use about ${Math.max(40, 70 - opts.tighten * 15)}% of every length limit this time.` : '';
-    const stream = this.client.messages.stream({
+    const message = await finalMessageOrClassify(this.client.messages.stream({
       model: this.model,
       max_tokens: 20000,
       system: [{ type: 'text', text: SYSTEM_STANDARD, cache_control: { type: 'ephemeral' } }],
-      output_config: { effort: 'high', format: zodOutputFormat(StandardReportSchema) },
-      messages: [{ role: 'user', content: `Order reference: ${brief.orderRef}\n${briefBlock(brief)}\n\nResearch sources:\n${sourceBlock(sources) || '(none found)'}\n\nResearch notes:\n${notes || '(none)'}\n\nWrite the standard report in the required structure.${tighten}` }],
-    });
-    const message = await stream.finalMessage();
-    if (message.stop_reason === 'refusal') throw new NonRetryableGenerationError(`Composition refused (${message.stop_details?.category ?? 'unspecified'}).`);
+      // No tools here: the only grammar is the compact output format.
+      output_config: { effort: 'high', format: STANDARD_FORMAT },
+      messages: [{ role: 'user', content: `Order reference: ${brief.orderRef}\n${briefBlock(brief)}\n\nResearch sources (cite by id):\n${sourceBlock(sources) || '(none found)'}\n\nResearch notes:\n${notes || '(none)'}\n\nWrite the standard report in the required structure.${tighten}` }],
+    }), 'compose_standard');
     if (message.stop_reason === 'max_tokens') throw new Error('Standard composition hit max_tokens; retrying.');
     if (!message.parsed_output) throw new Error('Standard composition returned no parseable output; retrying.');
-    const report = StandardReportSchema.parse(message.parsed_output);
-    checkCitations(report.claims, report.sources.length);
-    return { report, model: message.model, usage: { input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens } };
+    const gen = StandardGenSchema.parse(message.parsed_output);
+    const { report, diagnostics } = mapStandardGeneration(gen, sources, brief.unknowns);
+    return { report, model: message.model, usage: { input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens }, mapping: diagnostics };
   }
 
   async composeDetailed(brief: Brief, sources: ResearchSource[], notes: string, standard: StandardReport | null): Promise<ComposeOutput<DetailedReport>> {
-    const stream = this.client.messages.stream({
+    const message = await finalMessageOrClassify(this.client.messages.stream({
       model: this.model,
       max_tokens: 32000,
       system: [{ type: 'text', text: SYSTEM_DETAILED, cache_control: { type: 'ephemeral' } }],
-      output_config: { effort: 'high', format: zodOutputFormat(DetailedReportSchema) },
-      messages: [{ role: 'user', content: `Order reference: ${brief.orderRef}\n${briefBlock(brief)}\n\nStandard report verdict already delivered: ${standard ? `${standard.verdict.label}. ${standard.verdict.explanation}` : '(not available)'}\n\nResearch sources:\n${sourceBlock(sources) || '(none found)'}\n\nResearch notes:\n${notes || '(none)'}\n\nWrite the detailed report in the required structure.` }],
-    });
-    const message = await stream.finalMessage();
-    if (message.stop_reason === 'refusal') throw new NonRetryableGenerationError(`Composition refused (${message.stop_details?.category ?? 'unspecified'}).`);
+      output_config: { effort: 'high', format: DETAILED_FORMAT },
+      messages: [{ role: 'user', content: `Order reference: ${brief.orderRef}\n${briefBlock(brief)}\n\nStandard report verdict already delivered: ${standard ? `${standard.verdict.label}. ${standard.verdict.explanation}` : '(not available)'}\n\nResearch sources (cite by id):\n${sourceBlock(sources) || '(none found)'}\n\nResearch notes:\n${notes || '(none)'}\n\nWrite the detailed report in the required structure.` }],
+    }), 'compose_detailed');
     if (message.stop_reason === 'max_tokens') throw new Error('Detailed composition hit max_tokens; retrying.');
     if (!message.parsed_output) throw new Error('Detailed composition returned no parseable output; retrying.');
-    const report = DetailedReportSchema.parse(message.parsed_output);
-    checkCitations(report.claims, report.sources.length);
-    return { report, model: message.model, usage: { input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens } };
+    const gen = DetailedGenSchema.parse(message.parsed_output);
+    const { report, diagnostics } = mapDetailedGeneration(gen, sources);
+    return { report, model: message.model, usage: { input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens }, mapping: diagnostics };
   }
+
+}
+
+/** Awaits a stream's final message; API rejections become GenerationRequestError (non-retryable) with a sanitised diagnostic. */
+async function finalMessageOrClassify<M extends { stop_reason: string | null; stop_details?: { category?: string | null } | null }>(stream: { finalMessage(): Promise<M> }, stage: RequestDiagnostic['stage']): Promise<M> {
+  let message: M;
+  try {
+    message = await stream.finalMessage();
+  } catch (err) {
+    throw classifyApiError(err, stage);
+  }
+  if (message.stop_reason === 'refusal') throw new NonRetryableGenerationError(`${stage === 'research' ? 'Research' : 'Composition'} refused (${message.stop_details?.category ?? 'unspecified'}).`);
+  return message;
 }
 
 /** Evidence claims must cite listed sources; downgrade uncited ones to assumptions rather than fail. */
@@ -333,6 +414,8 @@ export class StubGenerator implements ReportGenerator {
   composeCalls = 0;
   failResearchOnce = false;
   failComposeOnce = false;
+  /** Simulate the API rejecting the compose request (HTTP 400 grammar too large): must not be retried. */
+  rejectComposeRequest = false;
   /** Make the standard draft overflow two pages until tighten > 0 (tests the tighten loop). */
   overflowUntilTightened = false;
 
@@ -350,6 +433,11 @@ export class StubGenerator implements ReportGenerator {
     if (this.failComposeOnce) {
       this.failComposeOnce = false;
       throw new Error('stub compose failure');
+    }
+    if (this.rejectComposeRequest) {
+      throw new GenerationRequestError('compose_standard request rejected by the API (grammar_too_large, HTTP 400, req_stub): The compiled grammar is too large, which would cause performance issues.', {
+        stage: 'compose_standard', status: 400, error_type: 'invalid_request_error', request_id: 'req_stub', message: 'The compiled grammar is too large, which would cause performance issues. Simplify your tool schemas or reduce the number of strict tools.', at: new Date().toISOString(),
+      });
     }
     const long = this.overflowUntilTightened && opts.tighten === 0;
     return { report: stubStandardReport(brief, long), model: 'stub', usage: { input_tokens: 0, output_tokens: 0 } };

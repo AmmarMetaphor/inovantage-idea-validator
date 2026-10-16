@@ -23,7 +23,7 @@ import type { Logger } from './log';
 import type { Mailer } from './mailer';
 import { renderDetailedPdf, renderStandardPdf, type PdfMeta } from './pdf';
 import { DetailedReportSchema, StandardReportSchema, type StandardReport } from './report-schema';
-import { buildBrief, NonRetryableGenerationError, type ReportGenerator } from './research';
+import { buildBrief, GenerationRequestError, NonRetryableGenerationError, type ReportGenerator } from './research';
 import { mintAccessToken } from './tokens';
 
 export interface JobDeps {
@@ -112,10 +112,24 @@ export async function runJob(deps: JobDeps, jobId: string, workerId: string): Pr
     let checkpoint = job.checkpoint;
     while (stage !== 'done') {
       jlog.info('job.stage_start', { stage, product: order.product });
+      const startedAt = Date.now();
       try {
         checkpoint = await runStage(deps, { job, order, stage, checkpoint, workerId, log: jlog });
+        checkpoint = withTiming(checkpoint, stage, Date.now() - startedAt);
+        jlog.info('job.stage_timing', { stage, ms: Date.now() - startedAt });
         stage = nextStage(stage);
       } catch (err) {
+        checkpoint = withTiming(checkpoint, stage, Date.now() - startedAt, true);
+        if (err instanceof GenerationRequestError) {
+          // The API rejected the request itself; an unchanged retry cannot
+          // succeed. Keep the research checkpoint, record a sanitised
+          // diagnostic where the owner can see it, and mark the report failed.
+          checkpoint = { ...checkpoint, api_error: err.diagnostic as unknown as Json };
+          await db.checkpointJob(job.id, workerId, stage, checkpoint).catch((inner) => jlog.warn('job.checkpoint_failed', { err: inner }));
+          await db.upsertReport(order.id, { status: 'failed', content: null }).catch((inner) => jlog.warn('job.report_fail_mark_failed', { err: inner }));
+          jlog.error('job.request_rejected', { stage, diagnostic: err.diagnostic });
+          throw err;
+        }
         if (err instanceof ReportTooLong) {
           const tighten = Number(checkpoint.tighten ?? 0) + 1;
           if (tighten > MAX_TIGHTEN) throw new NonRetryableGenerationError(`standard report still ${err.pages} pages after ${MAX_TIGHTEN} tighten passes`);
@@ -158,6 +172,23 @@ export async function runJob(deps: JobDeps, jobId: string, workerId: string): Pr
   } finally {
     clearInterval(heartbeat);
   }
+}
+
+function summariseMapping(m: { truncated: string[]; droppedSourceIds: number[]; downgradedClaims: number; normalised: string[] }) {
+  return { truncated: m.truncated.length, dropped_source_ids: m.droppedSourceIds.length, downgraded_claims: m.downgradedClaims, normalised: m.normalised.length };
+}
+
+/** Cumulative wall-clock per stage, kept in the checkpoint for owner timing evidence. */
+function withTiming(checkpoint: Json, stage: JobStage, ms: number, failed = false): Json {
+  const timings = (checkpoint.timings && typeof checkpoint.timings === 'object' && !Array.isArray(checkpoint.timings) ? checkpoint.timings : {}) as Record<string, Json>;
+  const prev = (timings[stage] && typeof timings[stage] === 'object' && !Array.isArray(timings[stage]) ? timings[stage] : {}) as Record<string, Json>;
+  return {
+    ...checkpoint,
+    timings: {
+      ...timings,
+      [stage]: { ms: Number(prev.ms ?? 0) + ms, runs: Number(prev.runs ?? 0) + 1, ...(failed ? { failed_runs: Number(prev.failed_runs ?? 0) + 1 } : prev.failed_runs ? { failed_runs: prev.failed_runs } : {}), last_ms: ms },
+    },
+  };
 }
 
 interface StageCtx {
@@ -226,12 +257,14 @@ async function runStage(deps: JobDeps, ctx: StageCtx): Promise<Json> {
           standard = parsed?.success ? parsed.data : null;
         }
         const out = await deps.generator.composeDetailed(brief, sources, notes, standard);
+        if (out.mapping) ctx.log.info('compose.mapping', { tier, ...summariseMapping(out.mapping) });
         content = out.report as unknown as Json;
         model = out.model;
         usage = out.usage;
         claims = out.report.claims;
       } else {
         const out = await deps.generator.composeStandard(brief, sources, notes, { tighten: Number(checkpoint.tighten ?? 0) });
+        if (out.mapping) ctx.log.info('compose.mapping', { tier, ...summariseMapping(out.mapping) });
         content = out.report as unknown as Json;
         verdict = out.report.verdict.label;
         model = out.model;

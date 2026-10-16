@@ -154,14 +154,101 @@ Every line must start with `OK`.
 - **Anthropic Console → Usage**: two requests (research with web search,
   composition) for the pilot run.
 
-To re-run a dead job after fixing the cause:
+### Resuming one failed job from its checkpoint
+
+Use this after deploying a fix, for **one** job you have looked at. It keeps
+the research checkpoint and sources, sends no email by itself (the
+confirmation already in `delivery_attempts` is skipped by the runner), and
+cannot start a duplicate run: `claim_job` only hands a job to one worker, and
+the `where` clauses below refuse a job that is live or already finished.
+
+1. Inspect the job and confirm it is the one you mean:
+
+   ```sql
+   select j.id, j.status, j.stage, j.attempts, j.max_attempts, j.lease_owner, j.lease_expires_at,
+          j.checkpoint->>'research_done' as research_done,
+          j.checkpoint->'api_error' as api_error,
+          j.checkpoint->'timings' as timings,
+          left(j.last_error, 200) as last_error,
+          o.status as order_status, o.source, o.product, r.status as report_status
+     from jobs j
+     join orders o on o.id = j.order_id
+     left join reports r on r.order_id = o.id
+    where j.id = '<job id>';
+   ```
+
+   Expected for the grammar failure: `status = dead` (or `queued` with
+   attempts near 5 on an old deploy), `stage = compose`,
+   `research_done = true`, `order_status = failed`, `report_status = failed`
+   or `generating`.
+
+2. Put the order back to a fulfillable status. A pilot order goes back to
+   `authorised`, a Stripe order to `paid`; the `where` guards keep the
+   statement a no-op on anything else:
+
+   ```sql
+   -- pilot order
+   update orders set status = 'authorised', failed_reason = null
+    where id = (select order_id from jobs where id = '<job id>')
+      and status = 'failed' and source = 'pilot' and authorised_by = 'owner_pilot';
+
+   -- Stripe order (paid_at and stripe_payment_intent_id are already set)
+   update orders set status = 'paid', failed_reason = null
+    where id = (select order_id from jobs where id = '<job id>')
+      and status = 'failed' and source <> 'pilot' and paid_at is not null;
+   ```
+
+3. Re-queue the job from its compose checkpoint. The research notes, sources
+   and timings in `checkpoint` are kept; only the error record is cleared:
+
+   ```sql
+   update jobs
+      set status = 'queued',
+          attempts = 0,
+          run_after = now(),
+          last_error = null,
+          finished_at = null,
+          lease_owner = null,
+          lease_expires_at = null,
+          checkpoint = checkpoint - 'api_error'
+    where id = '<job id>'
+      and stage = 'compose'
+      and status in ('dead', 'queued')
+      and (lease_expires_at is null or lease_expires_at < now());
+   ```
+
+   If this updates 0 rows the job is running, finished, or not at the
+   compose stage: stop and look again rather than forcing it.
+
+4. Mark the report draft as regenerating so the status page shows progress:
+
+   ```sql
+   update reports set status = 'generating'
+    where order_id = (select order_id from jobs where id = '<job id>')
+      and status = 'failed';
+   ```
+
+5. The scheduled dispatcher picks the job up within five minutes
+   (`dispatch.done` → `dispatched: 1`); the worker logs `job.claimed` with
+   `stage: compose`, then `job.stage_timing` for `compose`, `render` and
+   `deliver`. Research is not repeated.
+
+### Measuring a pilot run
+
+After a run finishes:
 
 ```sql
-update jobs set status = 'queued', attempts = 0, run_after = now(), last_error = null where id = '<job id>';
-update orders set status = 'paid', failed_reason = null where id = '<order id>';
+select j.checkpoint->'timings' as timings, j.started_at, j.finished_at,
+       r.input_tokens, r.output_tokens, r.model, r.page_count
+  from jobs j join reports r on r.order_id = j.order_id
+ where j.id = '<job id>';
 ```
 
-The dispatcher will pick it up within five minutes.
+`timings.<stage>.ms` is wall-clock per stage (cumulative over retries, with
+`runs` and `last_ms`). The five-minute target is met only if
+`finished_at - started_at` for a single clean attempt is under five minutes;
+the figures in this repository's tests come from the stub generator and say
+nothing about live model latency.
 
 ## 8. After the pilot
 

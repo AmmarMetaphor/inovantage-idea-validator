@@ -12,7 +12,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "pdf:samples": "tsx scripts/render-samples.mjs samples-out",
-    "test:e2e": "node tests/e2e/pilot-navigation.mjs"
+    "test:e2e": "node tests/e2e/pilot-navigation.mjs",
+    "schema:dump": "tsx scripts/dump-generation-schema.mts all"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.133.0",
