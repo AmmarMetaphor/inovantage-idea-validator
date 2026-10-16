@@ -54,6 +54,7 @@ exposed; customers see an 8-character short reference only.
    | `20261014000400_functions.sql` | `claim_job`, `extend_job_lease`, `recover_stalled_jobs`, `consume_rate_limit`, `prune_rate_limits` (service role only) |
    | `20261015000500_pilot_orders.sql` | pilot columns on orders/submissions, idempotency index, extended check constraints (adds only) |
    | `20261016000600_products_and_access.sql` | `orders.product` / `parent_order_id` (one order per submission *per product*), `reports.tier` / `page_count`, source provenance columns, nullable token expiry, clears preset access expiries (adds only) |
+   | `20261016000700_pilot_authorised_status.sql` | `orders.status = 'authorised'` for pilot orders (never `paid`), `authorised_at`, moves existing pilot rows from paid to authorised (adds only) |
 
 3. Verify the lockdown two ways: run `supabase/verify_rls.sql` in the SQL
    editor (every table must show `rls_enabled`, `rls_forced`, zero policies,
@@ -207,13 +208,25 @@ the web page's "preview" is static illustrative markup.
 
 ## Progress states
 
-`/api/report-status` derives the stage from records, never timers:
-`confirming_payment` (order pending), `payment_confirmed` (job queued),
-`researching`, `writing` (compose/render), `ready` (PDF stored), `email_sent`
-(a `delivery_attempts` row with status `sent`, i.e. Resend accepted the
-request). `failed` and `expired` are terminal. The page polls every 15 s while
-anything is in progress; refreshing or reopening the link resumes from the
-server state.
+`/api/report-status` derives the stage from records, never timers.
+Stripe orders: `confirming_payment` (order pending) → `payment_confirmed`
+(job queued; `confirmationEmailSent` says whether the confirmation email went
+out) → `researching` (a worker is running the research stage) → `writing`
+(compose/render) → `ready` (PDF stored) → `email_sent` (a `delivery_attempts`
+row of kind `report` with status `sent`, i.e. Resend accepted the request).
+Pilot orders never show a payment step: `submission_received` →
+`queued_for_research` → `researching` → … and their status is `authorised`.
+Each tier also carries `job: { state, attempts, nextRetryAt }` where state is
+`queued`, `running`, `retrying`, `failed` or `done`, so the page can say
+"retrying" honestly. `failed` and `expired` are terminal. The page polls
+every 15 s while anything is in progress; refreshing or reopening the link
+resumes from the server state.
+
+After a successful submission the browser navigates to the report page first
+and clears the questionnaire draft there (`location.state.clearDraft`). The
+review page's incomplete-answers guard must never run after submission:
+React Router commits navigations in a transition, so clearing the draft
+before navigating let the guard redirect to question 1.
 
 ## Endpoints
 

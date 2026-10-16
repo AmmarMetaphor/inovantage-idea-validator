@@ -22,7 +22,11 @@ export interface Submission {
   client_request_id: string | null;
 }
 
-export type OrderStatus = 'pending_payment' | 'paid' | 'fulfilled' | 'failed' | 'expired' | 'refunded';
+/** 'authorised' = owner-authorised pilot fulfilment with no payment (pilot orders only). */
+export type OrderStatus = 'pending_payment' | 'authorised' | 'paid' | 'fulfilled' | 'failed' | 'expired' | 'refunded';
+
+/** Statuses under which a report may be generated and read. */
+export const FULFILLABLE: OrderStatus[] = ['authorised', 'paid', 'fulfilled'];
 
 export type OrderSource = 'stripe' | 'pilot';
 export type AuthorisedBy = 'stripe_webhook' | 'checkout_return' | 'owner_pilot';
@@ -48,6 +52,7 @@ export interface Order {
   stripe_payment_intent_id: string | null;
   checkout_expires_at: string | null;
   paid_at: string | null;
+  authorised_at: string | null;
   fulfilled_at: string | null;
   failed_reason: string | null;
   report_expires_at: string | null;
@@ -177,6 +182,8 @@ export interface Db {
   attachCheckoutSession(orderId: string, sessionId: string, expiresAt: string): Promise<void>;
   /** Idempotent. Returns applied=false when the order was already paid/authorised. Throws on payment-intent conflict. */
   markOrderPaid(input: { orderId: string; paymentIntentId: string | null; authorisedBy: AuthorisedBy; paidAt: string; reportExpiresAt: string | null }): Promise<{ applied: boolean; order: Order }>;
+  /** Pilot only: pending_payment → authorised, no payment recorded. Idempotent. */
+  authoriseOrder(input: { orderId: string; authorisedBy: AuthorisedBy; now: string; reportExpiresAt: string | null }): Promise<{ applied: boolean; order: Order }>;
   setOrderStatus(orderId: string, status: OrderStatus, extra?: { failed_reason?: string; fulfilled_at?: string }): Promise<void>;
   /** Paid/fulfilled, unexpired orders for an email (newest first). */
   findActiveOrdersByEmail(emailNormalised: string, now: string, limit: number): Promise<Order[]>;

@@ -12,6 +12,8 @@ import { maskEmail } from '@/questionnaire/helpers';
 export type ReportStage =
   | 'confirming_payment'
   | 'payment_confirmed'
+  | 'submission_received'
+  | 'queued_for_research'
   | 'researching'
   | 'writing'
   | 'ready'
@@ -19,12 +21,18 @@ export type ReportStage =
   | 'failed'
   | 'expired';
 
+export type JobState = 'none' | 'queued' | 'running' | 'retrying' | 'failed' | 'done';
+
 export interface TierStatus {
   stage: ReportStage;
   label: string;
   pdfAvailable: boolean;
+  /** Final report email accepted by the provider. */
   emailSent: boolean;
+  /** Initial confirmation email accepted by the provider. */
+  confirmationEmailSent: boolean;
   verdict: string | null;
+  job: { state: JobState; attempts: number; nextRetryAt: string | null };
 }
 
 export interface ReportStatus {
@@ -185,7 +193,7 @@ export async function getReportStatus(tokenOrDemoRef: string): Promise<ReportSta
     }
     // Demo mode does not simulate progress: the pipeline is simply not run.
     const stage: ReportStage = order.paidAt ? 'payment_confirmed' : 'confirming_payment';
-    const tier: TierStatus = { stage, label: stage === 'payment_confirmed' ? 'Payment confirmed (demo: no processing)' : 'Confirming your payment', pdfAvailable: false, emailSent: false, verdict: null };
+    const tier: TierStatus = { stage, label: stage === 'payment_confirmed' ? 'Payment confirmed (demo: no processing)' : 'Confirming your payment', pdfAvailable: false, emailSent: false, confirmationEmailSent: false, verdict: null, job: { state: 'none', attempts: 0, nextRetryAt: null } };
     return { reportRef: tokenOrDemoRef, ideaName: 'Demo idea', orderedAt: order.createdAt, expiresAt: null, emailMasked: order.emailMasked, isPilot: false, standard: tier, detailed: null, upgrade: { price: '£35', priceNote: 'additional, one-time payment', available: false }, demo: true };
   }
   const s = await request<Omit<ReportStatus, 'demo'>>('/api/report-status', { method: 'POST', body: JSON.stringify({ token: tokenOrDemoRef }) });

@@ -105,6 +105,21 @@ export class SupabaseDb implements Db {
     if (!current) throw new DbError('orders.markPaid', { message: 'order not found' });
     return { applied: false, order: current };
   }
+  async authoriseOrder({ orderId, authorisedBy, now, reportExpiresAt }: Parameters<Db['authoriseOrder']>[0]) {
+    const res = await this.sb
+      .from('orders')
+      .update({ status: 'authorised', authorised_by: authorisedBy, authorised_at: now, report_expires_at: reportExpiresAt })
+      .eq('id', orderId)
+      .eq('status', 'pending_payment')
+      .eq('source', 'pilot')
+      .select('*')
+      .maybeSingle<Order>();
+    const updated = maybe('orders.authorise', res);
+    if (updated) return { applied: true, order: updated };
+    const current = await this.getOrder(orderId);
+    if (!current) throw new DbError('orders.authorise', { message: 'order not found' });
+    return { applied: false, order: current };
+  }
   async setOrderStatus(orderId: string, status: OrderStatus, extra?: { failed_reason?: string; fulfilled_at?: string }) {
     check('orders.status', await this.sb.from('orders').update({ status, ...(extra ?? {}) }).eq('id', orderId));
   }
@@ -114,7 +129,7 @@ export class SupabaseDb implements Db {
       .select('*')
       .eq('email_normalised', emailNormalised)
       .eq('product', 'standard')
-      .in('status', ['paid', 'fulfilled'])
+      .in('status', ['authorised', 'paid', 'fulfilled'])
       .or(`report_expires_at.is.null,report_expires_at.gt.${now}`)
       .order('created_at', { ascending: false })
       .limit(limit);

@@ -17,7 +17,7 @@
 import { MARKETS } from '../../src/config/product';
 import type { Answers } from '../../src/questionnaire/types';
 import { shortRef } from './crypto';
-import type { BlobStore, Db, Job, JobStage, Json, Order } from './db/types';
+import { FULFILLABLE, type BlobStore, type Db, type Job, type JobStage, type Json, type Order } from './db/types';
 import { confirmationEmail, ownerAlertEmail, reportReadyEmail } from './emails';
 import type { Logger } from './log';
 import type { Mailer } from './mailer';
@@ -102,8 +102,11 @@ export async function runJob(deps: JobDeps, jobId: string, workerId: string): Pr
   try {
     const order = await db.getOrder(job.order_id);
     if (!order) throw new NonRetryableGenerationError('order missing');
-    if (order.status !== 'paid' && order.status !== 'fulfilled') {
+    if (!FULFILLABLE.includes(order.status)) {
       throw new NonRetryableGenerationError(`order is ${order.status}, refusing to generate`);
+    }
+    if (order.status === 'authorised' && order.source !== 'pilot') {
+      throw new NonRetryableGenerationError('authorised status is only valid for pilot orders');
     }
     let stage = job.stage;
     let checkpoint = job.checkpoint;

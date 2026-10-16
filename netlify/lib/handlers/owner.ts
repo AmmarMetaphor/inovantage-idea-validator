@@ -97,10 +97,13 @@ export function hasOwnerSession(req: Request, deps: Deps): boolean {
 /**
  * POST /api/pilot-order { answers, clientRequestId? } → { reportPath, orderRef, created }
  * Validates like the public endpoint, stores the submission as source=pilot,
- * creates an explicit pilot order (amount 0, no Stripe ids, authorised_by
- * owner_pilot), creates the durable job once, kicks the worker, and hands the
- * owner a report access token. Repeat calls with the same clientRequestId
- * return the same order and never create a second job or email.
+ * creates an explicit pilot order (amount 0, no Stripe ids, status
+ * 'authorised', authorised_by owner_pilot), creates the durable job once,
+ * kicks the worker, and hands the owner a report access token. It responds as
+ * soon as the job row exists; it never waits for research, the PDF or email.
+ * Repeat calls with the same clientRequestId return the same order and job
+ * and never create a second job or email, so a client whose first response
+ * was lost can retry safely.
  */
 export async function createPilotOrder(req: Request, deps: Deps, contextIp?: string): Promise<Response> {
   requireMethod(req, 'POST');
@@ -149,8 +152,9 @@ export async function createPilotOrder(req: Request, deps: Deps, contextIp?: str
 
   const now = deps.now();
   const reportExpiresAt = env.reportAccessDays > 0 ? new Date(now.getTime() + env.reportAccessDays * 86_400_000).toISOString() : null;
-  const authorised = await deps.db.markOrderPaid({ orderId: order.id, paymentIntentId: null, authorisedBy: 'owner_pilot', paidAt: now.toISOString(), reportExpiresAt });
-  if (authorised.applied) await deps.db.setSubmissionStatus(submission.id, 'paid');
+  // Pilot orders are authorised by the owner, never marked paid.
+  const authorised = await deps.db.authoriseOrder({ orderId: order.id, authorisedBy: 'owner_pilot', now: now.toISOString(), reportExpiresAt });
+  if (authorised.applied) await deps.db.setSubmissionStatus(submission.id, 'ordered');
 
   const { created: jobCreated, job } = await deps.db.createJob({ order_id: order.id, type: 'report' });
   if (jobCreated) {

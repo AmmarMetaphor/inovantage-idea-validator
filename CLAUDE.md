@@ -64,6 +64,11 @@ Rules:
   available (stepper, Back button, Edit links on review).
 - Customers cannot jump past the furthest step they have reached via the URL.
 - The review page requires the email to be typed a second time.
+- After a successful submission, navigate to the report page **before**
+  clearing the draft; the report page clears it on mount
+  (`location.state.clearDraft`). Clearing first re-renders the review page's
+  guard and sends the user back to question 1 (React Router navigations are
+  transitions). `npm run test:e2e` is the regression test.
 
 ## State and privacy
 
@@ -163,8 +168,8 @@ Read `docs/BACKEND.md` before touching `netlify/` or `supabase/`.
   expiry by default; downloads mint fresh storage URLs on every click with
   no customer-facing deadline. Revocation and deletion: `scripts/delete-order.mjs`.
 - **Migrations.** Add a new file under `supabase/migrations/` with the next
-  timestamp; never edit an applied one (0001–0004 are applied in
-  production; 0005 adds pilot columns). Every new table gets RLS enabled and
+  timestamp; never edit an applied one (0001–0005 are applied in
+  production; 0006 adds products/access, 0007 the pilot `authorised` status). Every new table gets RLS enabled and
   forced with no policies, and grants revoked from `anon`/`authenticated`.
 - **Config.** All env reads go through `netlify/lib/env.ts`. Missing values
   throw `ConfigError` → HTTP 503 listing variable names (never values).
@@ -173,7 +178,8 @@ Read `docs/BACKEND.md` before touching `netlify/` or `supabase/`.
   customer data. Tokens, emails, answers and report text are redacted by key.
 - **Pilot.** `PILOT_MODE=true` enables owner-only pilot orders
   (`netlify/lib/handlers/owner.ts`): `orders.source='pilot'`, amount 0,
-  `authorised_by='owner_pilot'`, no Stripe ids, same job pipeline. Delivery
+  status `authorised` (never `paid`), `authorised_by='owner_pilot'`, no
+  Stripe ids, same job pipeline. Pilot progress labels never mention payment. Delivery
   is restricted to `env.pilotAllowedEmails` at send time in `jobs.ts`.
   Never relax that check, never read the pilot password anywhere but
   `env.ts`, and never put pilot secrets in `VITE_` variables.

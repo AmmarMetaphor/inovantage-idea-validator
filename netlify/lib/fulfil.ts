@@ -16,7 +16,7 @@
     5. mark the order paid (conditional update; unique payment intent)
     6. create the durable job (unique per order) BEFORE returning
 */
-import type { Db, Job, Order } from './db/types';
+import { FULFILLABLE, type Db, type Job, type Order } from './db/types';
 import type { Logger } from './log';
 import type { VerifiedSession } from './payments';
 
@@ -61,7 +61,7 @@ export async function fulfilCheckoutSession(deps: FulfilDeps, session: VerifiedS
   if (order.product === 'upgrade') {
     if (!order.parent_order_id) return { outcome: 'rejected', reason: 'upgrade order has no standard order', orderId };
     const parent = await db.getOrder(order.parent_order_id);
-    if (!parent || parent.submission_id !== order.submission_id || (parent.status !== 'paid' && parent.status !== 'fulfilled')) {
+    if (!parent || parent.submission_id !== order.submission_id || !FULFILLABLE.includes(parent.status)) {
       return { outcome: 'rejected', reason: 'standard order is not paid', orderId };
     }
   }

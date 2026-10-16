@@ -50,10 +50,12 @@ function renderValue(field: Field, answers: Answers): { text: string; empty: boo
 export function ReviewPage() {
   usePageTitle('Review your answers');
   const navigate = useNavigate();
-  const { answers, furthestStep, markReviewed, pilot, clientRequestId, reset } = useQuestionnaire();
+  const { answers, furthestStep, markReviewed, pilot, clientRequestId } = useQuestionnaire();
   const [confirmEmail, setConfirmEmail] = useState('');
   const [confirmError, setConfirmError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
+  /** Set once the server has accepted the submission; silences the incomplete-answers guard below. */
+  const [submitted, setSubmitted] = useState(false);
   const [submitError, setSubmitError] = useState<string>();
 
   useEffect(() => {
@@ -61,7 +63,11 @@ export function ReviewPage() {
   }, [markReviewed]);
 
   const invalid = firstInvalidStep(answers);
-  if (furthestStep < STEPS.length - 1 && invalid >= 0) {
+  // Guard against arriving here with incomplete answers. It must never fire
+  // after a successful submission: the draft is cleared on the report page,
+  // not here, so an emptied store cannot redirect back to question 1 while the
+  // navigation to the report page is still pending.
+  if (!submitted && furthestStep < STEPS.length - 1 && invalid >= 0) {
     return <Navigate to={`/validate/${invalid + 1}`} replace />;
   }
 
@@ -82,9 +88,14 @@ export function ReviewPage() {
     setSubmitting(true);
     try {
       if (pilot) {
+        // Responds as soon as the order and job rows exist (no waiting for
+        // research or email). On a retry the same clientRequestId recovers the
+        // existing order rather than creating another.
         const result = await createPilotOrder(answers, clientRequestId);
-        reset();
-        navigate(result.reportPath, { replace: true });
+        if (!result.reportPath) throw new Error('The server accepted the submission but returned no report link.');
+        setSubmitted(true);
+        // Navigate first; the report page clears the draft once it has mounted.
+        navigate(result.reportPath, { replace: true, state: { clearDraft: true } });
         return;
       }
       const session = await createCheckout(answers, clientRequestId);

@@ -17,6 +17,7 @@ migrations or RLS:
 
 1. `supabase/migrations/20261015000500_pilot_orders.sql`
 2. `supabase/migrations/20261016000600_products_and_access.sql`
+3. `supabase/migrations/20261016000700_pilot_authorised_status.sql`
 
 Then run `supabase/verify_rls.sql` and confirm every one of the ten tables
 shows `rls_enabled = true`, `rls_forced = true`, `policy_count = 0`,
@@ -98,11 +99,16 @@ Every line must start with `OK`.
    Use a recognisable working name such as `Pilot 1 — mobile dog grooming`.
    The form is eight questions over three screens.
 3. On the review page, confirm the email and click **Create pilot report (no
-   payment)**. You land on `/report/<token>` showing "Payment confirmed" as
-   the first stage (for a pilot this means "authorised by owner").
-4. Expect two emails at the pilot address: an order confirmation, then the
-   report with the two-page PDF attached and a private link. The page shows
-   the real stages (payment confirmed, researching, writing, ready, email sent).
+   payment)**. The server answers as soon as the order and job rows exist and
+   the browser moves straight to `/report/<token>` in the same tab. The
+   pilot timeline reads: Submission received → Queued for research →
+   Researching → Writing your report → Report ready → Email sent. No payment
+   step is shown and the order is recorded as `authorised`, never `paid`.
+4. Expect two emails at the pilot address: an order confirmation (the page
+   notes it separately), then the report with the two-page PDF attached and
+   a private link. "Email sent" on the page means the report email was
+   accepted by Resend. The email is a way back to the page, never a required
+   step to reach it.
 5. Confirm the link works with no account: open it in a private browser
    window, read the web report, then click **Download PDF**. Each click mints
    a fresh storage URL; there is no customer-facing deadline.
@@ -130,8 +136,8 @@ Every line must start with `OK`.
 - **Supabase → Table editor** (service role, in the dashboard):
 
   ```sql
-  select id, source, status, authorised_by, amount_minor, paid_at, fulfilled_at
-    from orders order by created_at desc limit 3;
+  select id, source, product, status, authorised_by, authorised_at, amount_minor, paid_at, fulfilled_at
+    from orders order by created_at desc limit 3;   -- pilot rows: status authorised, paid_at null
   select status, stage, attempts, last_error, lease_expires_at
     from jobs order by created_at desc limit 3;
   select status, model, input_tokens, output_tokens, pdf_object_path, verdict

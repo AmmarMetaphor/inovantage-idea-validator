@@ -4,9 +4,10 @@
   event, one job per order, atomic claim semantics.
 */
 import { randomUUID } from 'node:crypto';
-import type {
-  AccessToken, BlobStore, Db, DeliveryAttempt, DeliveryKind, Job, JobStage, Json, Order, OrderStatus,
-  Report, ReportClaim, ResearchSource, Submission, WebhookEvent, WebhookEventStatus,
+import {
+  FULFILLABLE,
+  type AccessToken, type BlobStore, type Db, type DeliveryAttempt, type DeliveryKind, type Job, type JobStage, type Json, type Order, type OrderStatus,
+  type Report, type ReportClaim, type ResearchSource, type Submission, type WebhookEvent, type WebhookEventStatus,
 } from './types';
 
 export class UniqueViolation extends Error {
@@ -57,7 +58,7 @@ export class MemoryDb implements Db {
     const o: Order = {
       id: randomUUID(), created_at: this.ts(), status: 'pending_payment', authorised_by: null,
       stripe_checkout_session_id: null, stripe_payment_intent_id: null, checkout_expires_at: null,
-      paid_at: null, fulfilled_at: null, failed_reason: null, report_expires_at: null, ...input,
+      paid_at: null, authorised_at: null, fulfilled_at: null, failed_reason: null, report_expires_at: null, ...input,
     };
     this.orders.set(o.id, o);
     return { order: o, created: true };
@@ -92,6 +93,17 @@ export class MemoryDb implements Db {
     o.report_expires_at = reportExpiresAt;
     return { applied: true, order: o };
   }
+  async authoriseOrder({ orderId, authorisedBy, now, reportExpiresAt }: Parameters<Db['authoriseOrder']>[0]) {
+    const o = this.orders.get(orderId);
+    if (!o) throw new Error('order not found');
+    if (o.source !== 'pilot') throw new Error('orders_authorised_is_pilot');
+    if (o.status !== 'pending_payment') return { applied: false, order: o };
+    o.status = 'authorised';
+    o.authorised_by = authorisedBy;
+    o.authorised_at = now;
+    o.report_expires_at = reportExpiresAt;
+    return { applied: true, order: o };
+  }
   async setOrderStatus(orderId: string, status: OrderStatus, extra?: { failed_reason?: string; fulfilled_at?: string }) {
     const o = this.orders.get(orderId);
     if (!o) return;
@@ -101,7 +113,7 @@ export class MemoryDb implements Db {
   }
   async findActiveOrdersByEmail(emailNormalised: string, now: string, limit: number) {
     return [...this.orders.values()]
-      .filter((o) => o.email_normalised === emailNormalised && o.product === 'standard' && (o.status === 'paid' || o.status === 'fulfilled') && (!o.report_expires_at || o.report_expires_at > now))
+      .filter((o) => o.email_normalised === emailNormalised && o.product === 'standard' && FULFILLABLE.includes(o.status) && (!o.report_expires_at || o.report_expires_at > now))
       .sort((a, b) => b.created_at.localeCompare(a.created_at))
       .slice(0, limit);
   }

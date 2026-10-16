@@ -1,7 +1,7 @@
 import { PRODUCTS } from '../../../src/config/product';
 import { hashIp, isValidTokenShape, maskEmail, sha256Hex, shortRef } from '../crypto';
 import type { Deps } from '../deps';
-import type { Job, Order, Report, Submission } from '../db/types';
+import { FULFILLABLE, type Job, type Order, type Report, type Submission } from '../db/types';
 import { recoveryEmail } from '../emails';
 import { fulfilCheckoutSession } from '../fulfil';
 import { clientIp, HttpError, isObject, json, readJson, requireMethod } from '../http';
@@ -17,8 +17,13 @@ import { enforceRateLimit } from './ratelimit';
 --------------------------------------------------------------------------- */
 
 export type PublicStage =
+  // Stripe orders
   | 'confirming_payment'
   | 'payment_confirmed'
+  // Pilot orders (no payment ever)
+  | 'submission_received'
+  | 'queued_for_research'
+  // Shared
   | 'researching'
   | 'writing'
   | 'ready'
@@ -29,6 +34,8 @@ export type PublicStage =
 export const STAGE_LABELS: Record<PublicStage, string> = {
   confirming_payment: 'Confirming your payment',
   payment_confirmed: 'Payment confirmed',
+  submission_received: 'Submission received',
+  queued_for_research: 'Queued for research',
   researching: 'Researching',
   writing: 'Writing your report',
   ready: 'Report ready',
@@ -37,16 +44,34 @@ export const STAGE_LABELS: Record<PublicStage, string> = {
   expired: 'Access ended',
 };
 
-export function publicStage(order: Order, job: Job | null, report: Report | null, emailSent: boolean, now: Date): PublicStage {
+export type JobState = 'none' | 'queued' | 'running' | 'retrying' | 'failed' | 'done';
+
+export function jobState(job: Job | null): { state: JobState; attempts: number; nextRetryAt: string | null } {
+  if (!job) return { state: 'none', attempts: 0, nextRetryAt: null };
+  if (job.status === 'dead') return { state: 'failed', attempts: job.attempts, nextRetryAt: null };
+  if (job.status === 'succeeded') return { state: 'done', attempts: job.attempts, nextRetryAt: null };
+  if (job.status === 'running') return { state: 'running', attempts: job.attempts, nextRetryAt: null };
+  if (job.attempts > 0 && job.last_error) return { state: 'retrying', attempts: job.attempts, nextRetryAt: job.run_after };
+  return { state: 'queued', attempts: job.attempts, nextRetryAt: null };
+}
+
+/**
+ * Derive the customer-facing stage from real records. Pilot orders never pass
+ * through a payment stage: their first step is "Submission received".
+ */
+export function publicStage(order: Order, job: Job | null, report: Report | null, emailSent: boolean, confirmationSent: boolean, now: Date): PublicStage {
+  const pilot = order.source === 'pilot';
   if (order.report_expires_at && new Date(order.report_expires_at) <= now) return 'expired';
-  if (order.status === 'pending_payment') return 'confirming_payment';
+  if (order.status === 'pending_payment') return pilot ? 'submission_received' : 'confirming_payment';
   if (order.status === 'failed' || job?.status === 'dead') return 'failed';
   const pdfReady = !!report?.pdf_object_path && (report.status === 'rendered' || report.status === 'delivered');
   if (pdfReady && emailSent) return 'email_sent';
   if (pdfReady) return 'ready';
+  const running = job?.status === 'running';
   switch (job?.stage) {
     case 'research':
-      return 'researching';
+      // Research has been reached; until a worker is actually running it, the job is queued for research.
+      return running ? 'researching' : pilot ? 'queued_for_research' : 'payment_confirmed';
     case 'compose':
     case 'render':
       return 'writing';
@@ -54,6 +79,7 @@ export function publicStage(order: Order, job: Job | null, report: Report | null
     case 'done':
       return 'ready';
     default:
+      if (pilot) return confirmationSent ? 'queued_for_research' : 'submission_received';
       return 'payment_confirmed';
   }
 }
@@ -82,7 +108,7 @@ async function authorise(req: Request, deps: Deps, contextIp: string | undefined
   const orders = await deps.db.getOrdersBySubmission(tokenOrder.submission_id);
   const standard = orders.find((o) => o.product === 'standard') ?? null;
   const upgrade = orders.find((o) => o.product === 'upgrade') ?? null;
-  const live = (o: Order | null) => !!o && (o.status === 'paid' || o.status === 'fulfilled' || o.status === 'failed');
+  const live = (o: Order | null) => !!o && (FULFILLABLE.includes(o.status) || o.status === 'failed');
   if (!standard || !live(standard)) throw new HttpError(404, 'not_found', 'No report matches that link.');
   const submission = await deps.db.getSubmission(tokenOrder.submission_id);
   if (!submission) throw new HttpError(404, 'not_found', 'No report matches that link.');
@@ -92,14 +118,23 @@ async function authorise(req: Request, deps: Deps, contextIp: string | undefined
 }
 
 async function tierStatus(deps: Deps, order: Order, kind: 'report' | 'detailed_report') {
-  const [job, report, emailSent] = await Promise.all([deps.db.getJobForOrder(order.id, 'report'), deps.db.getReport(order.id), deps.db.hasDelivery(order.id, kind)]);
-  const stage = publicStage(order, job, report, emailSent, deps.now());
+  const [job, report, emailSent, confirmationSent] = await Promise.all([
+    deps.db.getJobForOrder(order.id, 'report'),
+    deps.db.getReport(order.id),
+    deps.db.hasDelivery(order.id, kind),
+    deps.db.hasDelivery(order.id, 'confirmation'),
+  ]);
+  const stage = publicStage(order, job, report, emailSent, confirmationSent, deps.now());
   return {
     stage,
     label: STAGE_LABELS[stage],
     pdfAvailable: !!report?.pdf_object_path && (report.status === 'rendered' || report.status === 'delivered'),
+    /** The final report email was accepted by the email provider. */
     emailSent,
+    /** The initial confirmation email was accepted (distinct from the report email). */
+    confirmationEmailSent: confirmationSent,
     verdict: kind === 'report' ? (report?.verdict ?? null) : null,
+    job: jobState(job),
   };
 }
 
@@ -179,7 +214,7 @@ const CHECKOUT_TTL_SECONDS = 30 * 60;
  */
 export async function createUpgradeCheckout(req: Request, deps: Deps, contextIp?: string): Promise<Response> {
   const { ent } = await authorise(req, deps, contextIp, 'upgrade', 10);
-  if (ent.standard.status !== 'paid' && ent.standard.status !== 'fulfilled') throw new HttpError(409, 'standard_not_paid', 'The standard report must be paid first.');
+  if (!FULFILLABLE.includes(ent.standard.status)) throw new HttpError(409, 'standard_not_paid', 'The standard report must be paid first.');
   if (ent.upgrade && ent.upgrade.status !== 'pending_payment' && ent.upgrade.status !== 'expired') throw new HttpError(409, 'already_purchased', 'The detailed report has already been purchased.');
 
   const product = PRODUCTS.upgrade;
@@ -188,7 +223,7 @@ export async function createUpgradeCheckout(req: Request, deps: Deps, contextIp?
   if (ent.standard.source === 'pilot') {
     if (!hasOwnerSession(req, deps)) throw new HttpError(403, 'pilot_owner_required', 'Pilot upgrades can only be started from the owner page session.');
     const { order } = await deps.db.createOrder({ submission_id: ent.submission.id, email: ent.standard.email, email_normalised: ent.standard.email_normalised, amount_minor: 0, currency: product.currency, stripe_price_id: null, source: 'pilot', product: 'upgrade', parent_order_id: ent.standard.id });
-    await deps.db.markOrderPaid({ orderId: order.id, paymentIntentId: null, authorisedBy: 'owner_pilot', paidAt: now.toISOString(), reportExpiresAt: ent.standard.report_expires_at });
+    await deps.db.authoriseOrder({ orderId: order.id, authorisedBy: 'owner_pilot', now: now.toISOString(), reportExpiresAt: ent.standard.report_expires_at });
     const { created, job } = await deps.db.createJob({ order_id: order.id, type: 'report' });
     if (created) await deps.invokeWorker(job.id).catch((err) => deps.log.warn('upgrade.worker_invoke_failed', { job_id: job.id, err }));
     deps.log.info('upgrade.pilot', { order_id: order.id, job_id: job.id, created });

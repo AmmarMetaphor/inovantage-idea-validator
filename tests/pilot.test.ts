@@ -146,13 +146,21 @@ describe('Pilot orders', () => {
     expect(order.authorised_by).toBe('owner_pilot');
     expect(order.stripe_payment_intent_id).toBeNull();
     expect(order.stripe_checkout_session_id).toBeNull();
-    expect(order.status).toBe('paid');
+    expect(order.status).toBe('authorised'); // never 'paid'
+    expect(order.paid_at).toBeNull();
+    expect(order.authorised_at).not.toBeNull();
     expect(h.db.jobs.size).toBe(1);
     expect(h.workerCalls.length).toBe(1);
+    // The response arrives before any research, PDF or email: nothing has run yet.
+    expect(h.generator.researchCalls).toBe(0);
+    expect(h.mailer.sent).toHaveLength(0);
     // The owner's link works like a customer's: no account, status then download.
     const token = body.reportPath.replace('/report/', '');
-    const status = await reportStatus(post('/api/report-status', { token }), h.deps);
-    expect(((await status.json()) as { standard: { stage: string } }).standard.stage).toBe('payment_confirmed');
+    const status = (await (await reportStatus(post('/api/report-status', { token }), h.deps)).json()) as { isPilot: boolean; standard: { stage: string; label: string; job: { state: string } } };
+    expect(status.isPilot).toBe(true);
+    expect(status.standard.stage).toBe('submission_received');
+    expect(status.standard.label).toBe('Submission received');
+    expect(status.standard.job.state).toBe('queued');
   });
 
   it('a duplicate submission (same clientRequestId) never creates a second order, job or email', async () => {
@@ -236,12 +244,79 @@ describe('Pilot orders', () => {
   });
 });
 
+describe('Pilot progress never implies a payment', () => {
+  it('walks submission_received → queued_for_research → researching → writing → ready → email_sent', async () => {
+    const h = pilotHarness();
+    const { cookieHeader } = await login(h);
+    const body = (await (await pilotOrder(post('/api/pilot-order', { answers: validAnswers(ALLOWED) }, { cookie: cookieHeader }), h.deps)).json()) as { reportPath: string };
+    const token = body.reportPath.replace('/report/', '');
+    const job = [...h.db.jobs.values()][0];
+    const seen: string[] = [];
+    const read = async () => {
+      const s = (await (await reportStatus(post('/api/report-status', { token }), h.deps)).json()) as { standard: { stage: string; label: string; job: { state: string } } };
+      seen.push(s.standard.stage);
+      return s.standard;
+    };
+    expect((await read()).stage).toBe('submission_received');
+    // Confirmation email sent, research not started: queued for research.
+    await h.db.recordDelivery({ order_id: job.order_id, job_id: job.id, kind: 'confirmation', provider: 'resend', provider_message_id: 'c1', status: 'sent', error: null });
+    expect((await read()).stage).toBe('queued_for_research');
+    await h.db.claimJob(job.id, 'w', 60);
+    await h.db.checkpointJob(job.id, 'w', 'research', {});
+    expect((await read()).stage).toBe('researching');
+    // A failed attempt shows as retrying, not as fake progress.
+    await h.db.failJob(job.id, 'w', { error: 'transient', retryAt: new Date(h.clock.now.getTime() + 60_000).toISOString() });
+    const retrying = await read();
+    expect(retrying.stage).toBe('queued_for_research');
+    expect(retrying.job.state).toBe('retrying');
+    h.clock.advance(61_000);
+    await h.db.claimJob(job.id, 'w2', 60);
+    await h.db.checkpointJob(job.id, 'w2', 'compose', {});
+    expect((await read()).stage).toBe('writing');
+    await h.db.upsertReport(job.order_id, { status: 'rendered', pdf_object_path: 'orders/x/standard-v1.pdf' });
+    expect((await read()).stage).toBe('ready');
+    await h.db.recordDelivery({ order_id: job.order_id, job_id: job.id, kind: 'report', provider: 'resend', provider_message_id: 'r1', status: 'sent', error: null });
+    expect((await read()).stage).toBe('email_sent');
+    for (const stage of seen) expect(stage).not.toMatch(/payment|paid/);
+    const { STAGE_LABELS } = await import('../netlify/lib/handlers/report');
+    for (const stage of ['submission_received', 'queued_for_research', 'researching', 'writing', 'ready', 'email_sent'] as const) {
+      expect(STAGE_LABELS[stage].toLowerCase()).not.toMatch(/pay/);
+    }
+  });
+
+  it('retry after an interrupted response recovers the same order and job', async () => {
+    const h = pilotHarness();
+    const { cookieHeader } = await login(h);
+    const payload = { answers: validAnswers(ALLOWED), clientRequestId: '55555555-5555-4555-8555-555555555555' };
+    // First request: the order and job are created, then minting the access token fails
+    // (simulating a crash or dropped connection before the browser gets a response).
+    const original = h.db.createAccessToken.bind(h.db);
+    h.db.createAccessToken = async () => { throw new Error('connection reset'); };
+    const first = await pilotOrder(post('/api/pilot-order', payload, { cookie: cookieHeader }), h.deps);
+    expect(first.status).toBe(500);
+    expect(h.db.orders.size).toBe(1);
+    expect(h.db.jobs.size).toBe(1);
+    h.db.createAccessToken = original;
+    // Retry with the same clientRequestId: no second submission, order or job; a usable link comes back.
+    const second = await pilotOrder(post('/api/pilot-order', payload, { cookie: cookieHeader }), h.deps);
+    expect(second.status).toBe(200);
+    const body = (await second.json()) as { reportPath: string; created: boolean };
+    expect(body.reportPath).toMatch(/^\/report\/[A-Za-z0-9_-]{43}$/);
+    expect(body.created).toBe(false);
+    expect(h.db.submissions.size).toBe(1);
+    expect(h.db.orders.size).toBe(1);
+    expect(h.db.jobs.size).toBe(1);
+    expect(h.workerCalls.length).toBe(1);
+    expect([...h.db.orders.values()][0].status).toBe('authorised');
+  });
+});
+
 describe('Migrations: row level security', () => {
   const tables = ['submissions', 'orders', 'jobs', 'research_sources', 'reports', 'report_claims', 'access_tokens', 'webhook_events', 'delivery_attempts', 'rate_limits'];
   it('every table is created and locked down, and the pilot migration only adds', () => {
     const core = readFileSync('supabase/migrations/20261014000100_core_schema.sql', 'utf8');
     const security = readFileSync('supabase/migrations/20261014000200_security.sql', 'utf8');
-    const pilot = readFileSync('supabase/migrations/20261015000500_pilot_orders.sql', 'utf8');
+    const pilot = readFileSync('supabase/migrations/20261015000500_pilot_orders.sql', 'utf8') + readFileSync('supabase/migrations/20261016000700_pilot_authorised_status.sql', 'utf8');
     for (const t of tables) {
       expect(core).toMatch(new RegExp(`create table if not exists public\\.${t}\\b`));
       expect(security).toContain(`'${t}'`);

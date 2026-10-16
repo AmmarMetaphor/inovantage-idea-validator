@@ -31,8 +31,9 @@ export function CheckoutReturnPage() {
         if (cancelled) return;
         setResult(r);
         if (r.state === 'paid') {
-          reset(); // answers are submitted; clear them from memory
-          if (r.reportPath) navigate(r.reportPath, { replace: true });
+          // The report page clears the draft after it mounts (see ReportStatusPage).
+          if (r.reportPath) navigate(r.reportPath, { replace: true, state: { clearDraft: true } });
+          else reset();
           return;
         }
         if (r.state === 'pending' && attempts.current < 20) {

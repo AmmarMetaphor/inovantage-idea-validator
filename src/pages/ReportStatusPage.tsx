@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/Button';
 import { DemoBadge } from '@/components/DemoBadge';
 import { Notice } from '@/components/Notice';
@@ -10,38 +10,56 @@ import type { DetailedReport, StandardReport } from '@/components/report/types';
 import { COMPANY, DELIVERY_COPY } from '@/config/product';
 import { DEMO_MODE } from '@/config/runtime';
 import { createUpgradeCheckout, getReportContent, getReportDownloadUrl, getReportStatus, isDemoReference, type FinancialResult, type ReportStage, type ReportStatus, type TierStatus } from '@/lib/api';
+import { useQuestionnaire } from '@/questionnaire/store';
 import '@/styles/web-report.css';
 
-/** Real backend states, in display order. */
-const STAGES: { stage: ReportStage; title: string; desc: string }[] = [
+/** Real backend states, in display order. Paid orders and pilot orders have different first steps. */
+interface Step { stage: ReportStage; title: string; desc: string }
+
+const PAID_STEPS: Step[] = [
   { stage: 'confirming_payment', title: 'Confirming your payment', desc: 'Checking with the payment provider.' },
   { stage: 'payment_confirmed', title: 'Payment confirmed', desc: 'Your order is queued for research.' },
   { stage: 'researching', title: 'Researching', desc: 'Gathering public evidence for your market.' },
   { stage: 'writing', title: 'Writing your report', desc: 'Composing the verdict, scorecard and scenarios; rendering the PDF.' },
   { stage: 'ready', title: 'Report ready', desc: 'The web report and PDF are available below.' },
-  { stage: 'email_sent', title: 'Email sent', desc: 'A copy with the PDF has been sent to you.' },
+  { stage: 'email_sent', title: 'Email sent', desc: 'The report email with the PDF has been sent.' },
 ];
 
-const ORDER: ReportStage[] = STAGES.map((s) => s.stage);
-const rank = (s: ReportStage) => ORDER.indexOf(s);
+const PILOT_STEPS: Step[] = [
+  { stage: 'submission_received', title: 'Submission received', desc: 'Your answers are stored and the job is created. No payment is involved.' },
+  { stage: 'queued_for_research', title: 'Queued for research', desc: 'Waiting for a worker to start the research.' },
+  { stage: 'researching', title: 'Researching', desc: 'Gathering public evidence for your market.' },
+  { stage: 'writing', title: 'Writing your report', desc: 'Composing the verdict, scorecard and scenarios; rendering the PDF.' },
+  { stage: 'ready', title: 'Report ready', desc: 'The web report and PDF are available below.' },
+  { stage: 'email_sent', title: 'Email sent', desc: 'The report email with the PDF has been sent.' },
+];
 
-function Timeline({ tier, emailMasked }: { tier: TierStatus; emailMasked: string }) {
-  const current = rank(tier.stage);
+function Timeline({ tier, emailMasked, pilot }: { tier: TierStatus; emailMasked: string; pilot: boolean }) {
+  const steps = pilot ? PILOT_STEPS : PAID_STEPS;
+  const order = steps.map((s) => s.stage);
+  const current = order.indexOf(tier.stage);
+  const job = tier.job;
   return (
     <ol className="timeline" aria-label="Report progress">
-      {STAGES.map((s, i) => {
-        const r = rank(s.stage);
+      {steps.map((s, i) => {
+        const r = order.indexOf(s.stage);
         const cls = r < current ? 'done' : r === current ? (tier.stage === 'email_sent' ? 'done' : 'active') : 'pending';
+        let desc = s.desc;
+        if (s.stage === 'email_sent' && tier.emailSent) desc = `Your report has been sent to ${emailMasked}.`;
+        if ((s.stage === 'payment_confirmed' || s.stage === 'submission_received') && tier.confirmationEmailSent) desc += ` A confirmation email (not the report) was sent to ${emailMasked}.`;
+        if (cls === 'active' && job.state === 'retrying') desc = `A step failed and will be retried automatically${job.nextRetryAt ? ` after ${new Date(job.nextRetryAt).toLocaleTimeString('en-GB')}` : ''} (attempt ${job.attempts}).`;
+        if (cls === 'active' && job.state === 'queued' && s.stage !== 'queued_for_research' && s.stage !== 'submission_received') desc += ' Queued; waiting for a worker.';
         return (
           <li key={s.stage} className={`timeline__item timeline__item--${cls}`}>
             <span className="timeline__dot" aria-hidden="true">{cls === 'done' ? '✓' : i + 1}</span>
             <div>
               <p className="timeline__title">
                 {s.title}
+                {cls === 'active' && job.state === 'retrying' && <span className="status status--caution" style={{ marginLeft: '0.5rem' }}>Retrying</span>}
                 {cls === 'active' && <span className="visually-hidden"> (in progress)</span>}
                 {cls === 'done' && <span className="visually-hidden"> (complete)</span>}
               </p>
-              <p className="timeline__desc">{s.stage === 'email_sent' && tier.emailSent ? `Your report has been sent to ${emailMasked}.` : s.desc}</p>
+              <p className="timeline__desc">{desc}</p>
             </div>
           </li>
         );
@@ -54,6 +72,18 @@ export function ReportStatusPage() {
   usePageTitle('Your report');
   const { token = '' } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  const { reset } = useQuestionnaire();
+
+  // Arriving from a successful submission: clear the questionnaire draft now.
+  // This page has no answers-based guard, so clearing here cannot redirect
+  // anyone back to the questionnaire. Refreshes carry no state and skip this.
+  useEffect(() => {
+    if ((location.state as { clearDraft?: boolean } | null)?.clearDraft) {
+      reset();
+      navigate(location.pathname, { replace: true, state: null });
+    }
+  }, [location.state, location.pathname, navigate, reset]);
   const [status, setStatus] = useState<ReportStatus | null>(null);
   const [error, setError] = useState<string>();
   const [standard, setStandard] = useState<{ content: StandardReport; fin: FinancialResult; generatedAt: string | null } | null>(null);
@@ -126,7 +156,7 @@ export function ReportStatusPage() {
   };
 
   const std = status?.standard;
-  const title = !std ? 'Your report' : std.stage === 'failed' ? 'We hit a problem with your report' : std.stage === 'expired' ? 'Access to this report has ended' : std.stage === 'ready' || std.stage === 'email_sent' ? 'Your report is ready' : 'We are working on your report';
+  const title = !std ? 'Your report' : std.stage === 'failed' ? 'We hit a problem with your report' : std.stage === 'expired' ? 'Access to this report has ended' : std.stage === 'ready' || std.stage === 'email_sent' ? 'Your report is ready' : std.stage === 'confirming_payment' ? 'Confirming your payment' : 'We are working on your report';
 
   return (
     <div className="container form-page page-enter report-page">
@@ -165,8 +195,9 @@ export function ReportStatusPage() {
 
       {status && std && std.stage !== 'failed' && std.stage !== 'expired' && (
         <div className="card stack" style={{ marginTop: 'var(--space-6)' }}>
-          <Timeline tier={std} emailMasked={status.emailMasked} />
+          <Timeline tier={std} emailMasked={status.emailMasked} pilot={status.isPilot} />
           {std.stage !== 'ready' && std.stage !== 'email_sent' && <p className="small muted">{DELIVERY_COPY.short} This page updates itself; you can close it and come back with your link.</p>}
+          {status.isPilot && <p className="small muted">Owner pilot run: no payment was taken or recorded.</p>}
           {(std.stage === 'ready' || std.stage === 'email_sent') && (
             <div className="cluster" style={{ borderTop: '1px solid var(--color-border)', paddingTop: 'var(--space-5)' }}>
               <Button size="lg" onClick={() => download('standard')} disabled={downloading !== null || !std.pdfAvailable}>
@@ -187,7 +218,7 @@ export function ReportStatusPage() {
       {status?.detailed && status.detailed.purchased && status.detailed.stage !== 'email_sent' && status.detailed.stage !== 'ready' && (
         <div className="card stack" style={{ marginTop: 'var(--space-5)' }}>
           <p className="eyebrow eyebrow--gold">Detailed report</p>
-          <Timeline tier={status.detailed} emailMasked={status.emailMasked} />
+          <Timeline tier={status.detailed} emailMasked={status.emailMasked} pilot={status.isPilot} />
         </div>
       )}
 

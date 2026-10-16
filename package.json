@@ -11,7 +11,8 @@
     "typecheck": "tsc -b",
     "test": "vitest run",
     "test:watch": "vitest",
-    "pdf:samples": "tsx scripts/render-samples.mjs samples-out"
+    "pdf:samples": "tsx scripts/render-samples.mjs samples-out",
+    "test:e2e": "node tests/e2e/pilot-navigation.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.133.0",
@@ -31,6 +32,7 @@
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^5.0.0",
+    "playwright-core": "^1.56.1",
     "tsx": "^4.23.15",
     "typescript": "~5.9.3",
     "vite": "^7.1.0",
