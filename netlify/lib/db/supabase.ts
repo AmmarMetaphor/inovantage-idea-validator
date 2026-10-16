@@ -72,14 +72,16 @@ export class SupabaseDb implements Db {
     const ins = await this.sb.from('orders').insert(input).select('*').single<Order>();
     if (!ins.error) return { order: ins.data, created: true };
     if (ins.error.code !== UNIQUE_VIOLATION) throw new DbError('orders.insert', ins.error);
-    const existing = one('orders.bySubmission', await this.sb.from('orders').select('*').eq('submission_id', input.submission_id).single<Order>());
+    const existing = one('orders.bySubmissionProduct', await this.sb.from('orders').select('*').eq('submission_id', input.submission_id).eq('product', input.product).single<Order>());
     return { order: existing, created: false };
   }
   async getOrder(id: string) {
     return maybe('orders.get', await this.sb.from('orders').select('*').eq('id', id).maybeSingle<Order>());
   }
-  async getOrderBySubmission(submissionId: string) {
-    return maybe('orders.bySubmission', await this.sb.from('orders').select('*').eq('submission_id', submissionId).maybeSingle<Order>());
+  async getOrdersBySubmission(submissionId: string) {
+    const res = await this.sb.from('orders').select('*').eq('submission_id', submissionId);
+    check('orders.bySubmission', res);
+    return (res.data ?? []) as Order[];
   }
   async getOrderByCheckoutSession(sessionId: string) {
     return maybe('orders.bySession', await this.sb.from('orders').select('*').eq('stripe_checkout_session_id', sessionId).maybeSingle<Order>());
@@ -111,6 +113,7 @@ export class SupabaseDb implements Db {
       .from('orders')
       .select('*')
       .eq('email_normalised', emailNormalised)
+      .eq('product', 'standard')
       .in('status', ['paid', 'fulfilled'])
       .or(`report_expires_at.is.null,report_expires_at.gt.${now}`)
       .order('created_at', { ascending: false })
@@ -200,7 +203,7 @@ export class SupabaseDb implements Db {
     check('research_sources.insert', await this.sb.from('research_sources').insert(rows));
   }
   async getResearchSources(orderId: string) {
-    const res = await this.sb.from('research_sources').select('url,title,publisher,page_age,snippet').eq('order_id', orderId);
+    const res = await this.sb.from('research_sources').select('url,title,publisher,page_age,snippet,published_date,geography,unit,period,claim_type').eq('order_id', orderId);
     check('research_sources.get', res);
     return (res.data ?? []) as ResearchSource[];
   }
@@ -221,6 +224,11 @@ export class SupabaseDb implements Db {
   }
   async findAccessToken(tokenHash: string) {
     return maybe('access_tokens.find', await this.sb.from('access_tokens').select('*').eq('token_hash', tokenHash).maybeSingle<AccessToken>());
+  }
+  async revokeTokensForOrder(orderId: string, now: string) {
+    const res = await this.sb.from('access_tokens').update({ revoked_at: now }).eq('order_id', orderId).is('revoked_at', null).select('id');
+    check('access_tokens.revoke', res);
+    return res.data?.length ?? 0;
   }
   async touchAccessToken(id: string, now: string) {
     // Best effort; not transactional. use_count is informational only.

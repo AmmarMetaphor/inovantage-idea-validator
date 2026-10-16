@@ -53,6 +53,13 @@ function coerce(field: Field, raw: unknown): AnswerValue | undefined {
       const s = cleanString(raw, 64);
       return s && field.options.some((o) => o.value === s) ? s : undefined;
     }
+    case 'combobox': {
+      // Known option value, known label, or the customer's own text.
+      const s = cleanString(raw, field.maxLength ?? 80);
+      if (!s) return undefined;
+      const byLabel = field.options.find((o) => o.label === s);
+      return byLabel && byLabel.value !== 'other' ? byLabel.value : s;
+    }
     case 'checkbox-group': {
       if (!Array.isArray(raw)) return undefined;
       const allowed = new Set(field.options.map((o) => o.value));
@@ -76,6 +83,11 @@ export function sanitiseAnswers(raw: unknown): Answers {
   const out: Answers = {};
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return out;
   for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (key === 'currency') {
+      const c = cleanString(value, 3);
+      if (c && ['GBP', 'USD', 'AUD'].includes(c)) out.currency = c;
+      continue;
+    }
     const field = FIELD_BY_ID.get(key);
     if (!field) continue; // unknown keys are dropped silently
     const v = coerce(field, value);
@@ -96,6 +108,8 @@ export function validateSubmission(raw: unknown): ValidationResult {
   const marketDef = MARKETS.find((m) => m.code === market);
   if (!marketDef) errors.country = 'Choose a primary market.';
 
+  // Currency follows the market in the eight-question form; a v1 submission may carry its own.
+  if (!['GBP', 'USD', 'AUD'].includes(asString(answers.currency)) && marketDef) answers.currency = marketDef.currency;
   const currency = asString(answers.currency) as 'GBP' | 'USD' | 'AUD';
   if (!['GBP', 'USD', 'AUD'].includes(currency)) errors.currency = 'Choose a currency.';
 

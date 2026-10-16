@@ -53,6 +53,7 @@ exposed; customers see an 8-character short reference only.
    | `20261014000300_storage.sql` | private `reports` bucket (PDF only, 20 MB cap) |
    | `20261014000400_functions.sql` | `claim_job`, `extend_job_lease`, `recover_stalled_jobs`, `consume_rate_limit`, `prune_rate_limits` (service role only) |
    | `20261015000500_pilot_orders.sql` | pilot columns on orders/submissions, idempotency index, extended check constraints (adds only) |
+   | `20261016000600_products_and_access.sql` | `orders.product` / `parent_order_id` (one order per submission *per product*), `reports.tier` / `page_count`, source provenance columns, nullable token expiry, clears preset access expiries (adds only) |
 
 3. Verify the lockdown two ways: run `supabase/verify_rls.sql` in the SQL
    editor (every table must show `rls_enabled`, `rls_forced`, zero policies,
@@ -63,10 +64,17 @@ exposed; customers see an 8-character short reference only.
 
 ## 2. Stripe
 
-1. Products → add a product "Idea feasibility report" with a **one-time**
-   price of **£24.00 (GBP)**. Copy the Price ID (`price_…`) into
-   `STRIPE_PRICE_ID`. The server checks at checkout time that this price is
-   2400 GBP; a mismatch is refused with a setup error.
+1. Stay in **test mode** while developing (toggle in the Stripe dashboard).
+   Products → add two products, each with a **one-time** GBP price:
+
+   | Product name | Price | Variable for its Price ID | Server expects |
+   | --- | --- | --- | --- |
+   | Idea Validation Report | £17.00 | `STRIPE_PRICE_ID_STANDARD` | 1700 GBP |
+   | Detailed Report Upgrade | £35.00 | `STRIPE_PRICE_ID_UPGRADE` | 3500 GBP |
+
+   The server re-reads each Price at checkout time and refuses to create a
+   session if the amount or currency differs from `src/config/product.ts`.
+   The upgrade is additional (£52 combined); the UI says so everywhere.
 2. Developers → Webhooks → add an endpoint:
 
    ```
@@ -89,8 +97,9 @@ Fulfilment rules the code enforces:
 - The session is re-read from Stripe and must be `mode=payment`,
   `payment_status=paid`, carry our order id in both `metadata` and
   `client_reference_id`, match the session id stored on that order, equal the
-  order's amount and currency, and contain exactly one unit of
-  `STRIPE_PRICE_ID`.
+  order's amount and currency, and contain exactly one unit of the Price for
+  the order's product (`STRIPE_PRICE_ID_STANDARD` or `STRIPE_PRICE_ID_UPGRADE`).
+  An upgrade session is also rejected unless its parent standard order is paid.
 - The order flips to paid with a conditional update (only from
   `pending_payment`) and a unique payment-intent constraint.
 - The job row is created before the 200 is sent. If anything fails, the event
@@ -161,6 +170,51 @@ the job is marked dead. Submissions carry a browser-generated
 `clientRequestId`, so a retried request returns the existing submission, order
 and job rather than creating duplicates.
 
+## Products, entitlements and the upgrade
+
+`orders` are unique per (`submission_id`, `product`). The standard order is
+created at the first checkout; an upgrade order (`product = 'upgrade'`,
+`parent_order_id` = the standard order) is created when the customer clicks
+the upgrade button on their report page. Each paid order gets exactly one job
+(`jobs` unique per order) and one report (`reports` unique per order, `tier`
+standard or detailed). Any access token for either order of a submission
+opens the same report page; `/api/report-content` and `/api/report-download`
+take `tier` and return the detailed tier only when the upgrade order is paid
+and its report exists. Nothing premium is ever sent for an unpaid upgrade;
+the web page's "preview" is static illustrative markup.
+
+## Report access and retention
+
+- **Stable link.** The customer's link is `/report/<token>`; email-delivered
+  tokens have `expires_at = null` (no expiry). Tokens minted on the checkout
+  return page or by recovery expire (`TOKEN_TTL_DAYS`, `RECOVERY_TOKEN_TTL_DAYS`)
+  because fresh ones can always be issued by recovery.
+- **No purchase-access expiry.** `REPORT_ACCESS_DAYS` defaults to 0, so
+  `orders.report_expires_at` is null; migration 0006 nulls existing values.
+  Setting it to a positive number is an explicit policy decision.
+- **Downloads.** The PDF stays in the private `reports` bucket. Each download
+  click calls `/api/report-download`, which mints a fresh 120-second storage
+  URL. No deadline is shown to the customer; repeat downloads always work.
+- **Revocation.** `access_tokens.revoked_at` is honoured on every request.
+  `scripts/delete-order.mjs <submission id> --revoke-only` revokes every token
+  for a submission (recovery can re-issue); without the flag it deletes the
+  submission, its orders, jobs, research, reports, claims, tokens and delivery
+  records (cascade) and the PDF objects.
+- **Retention.** There is no automatic deletion job. Data is kept while the
+  report is available; deletion is on request via the script above.
+- **No token logging.** Tokens travel in POST bodies, the logger redacts
+  token-like strings, and the private routes are served no-referrer/noindex.
+
+## Progress states
+
+`/api/report-status` derives the stage from records, never timers:
+`confirming_payment` (order pending), `payment_confirmed` (job queued),
+`researching`, `writing` (compose/render), `ready` (PDF stored), `email_sent`
+(a `delivery_attempts` row with status `sent`, i.e. Resend accepted the
+request). `failed` and `expired` are terminal. The page polls every 15 s while
+anything is in progress; refreshing or reopening the link resumes from the
+server state.
+
 ## Endpoints
 
 | Method | Path | Auth | Purpose |
@@ -170,7 +224,9 @@ and job rather than creating duplicates.
 | POST | `/api/stripe-webhook` | Stripe signature | fulfil paid sessions |
 | GET | `/api/checkout-result?session_id=` | 60/10 min per IP | `{ state, reportPath }` after server-side verification |
 | POST | `/api/report-status` `{ token }` | token, 120/10 min | minimal status |
-| POST | `/api/report-download` `{ token }` | token, 30/10 min | 120-second signed PDF URL |
+| POST | `/api/report-content` `{ token, tier }` | token, 120/10 min | structured report + computed financials (detailed only when paid) |
+| POST | `/api/report-download` `{ token, tier }` | token, 60/10 min | fresh short-lived storage URL for the PDF |
+| POST | `/api/create-upgrade-checkout` `{ token }` | token, 10/10 min | upgrade order + Stripe session (pilot: owner session → pilot upgrade) |
 | POST | `/api/recover-report` `{ email }` | 5/15 min per IP, 3/day per email | always `{ ok: true }`; emails the original order address only |
 | POST | `/.netlify/functions/report-worker-background` | `Bearer WORKER_SECRET` | run one job |
 | cron | `dispatch-jobs` | Netlify scheduler | recovery and dispatch every 5 minutes |
@@ -191,6 +247,9 @@ and job rather than creating duplicates.
   retry after a crash in `deliver` never calls the model or renders again.
 - Retries back off 1, 5, 15, 60, 180 minutes; after `max_attempts` (5) the
   job is `dead`, the order is `failed`, and `OWNER_ALERT_EMAIL` is notified.
+- The standard report must render to exactly two A4 pages. If it does not,
+  the runner clears the draft and re-runs compose with a "tighten" hint (up
+  to twice) before failing; `reports.page_count` records the result.
 - To re-run a dead job after fixing the cause:
 
   ```sql

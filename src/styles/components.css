@@ -684,6 +684,67 @@
   accent-color: var(--color-ink-800);
 }
 
+/* Numbered questions */
+.question {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.question + .question {
+  margin-top: var(--space-10);
+  padding-top: var(--space-8);
+  border-top: 1px solid var(--color-border);
+}
+
+.question__legend {
+  display: flex;
+  gap: var(--space-3);
+  align-items: baseline;
+  font-family: var(--font-serif);
+  font-size: var(--text-xl);
+  line-height: var(--leading-tight);
+  color: var(--color-ink-900);
+  margin-bottom: var(--space-2);
+  padding: 0;
+}
+
+.question__num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  background: var(--color-ink-800);
+  color: #fff;
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  font-weight: 700;
+}
+
+.question__help {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  margin-bottom: var(--space-5);
+}
+
+.question__fields > .field-wrap + .field-wrap {
+  margin-top: var(--space-5);
+}
+
+.question--multi .field__label {
+  font-size: var(--text-base);
+}
+
+.field__hint {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  margin-top: var(--space-2);
+}
+
 /* Section headings inside a step */
 .form-section {
   margin-top: var(--space-10);

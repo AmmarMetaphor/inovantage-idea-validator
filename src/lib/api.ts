@@ -9,15 +9,34 @@ import { DEMO_MODE } from '@/config/runtime';
 import type { Answers } from '@/questionnaire/types';
 import { maskEmail } from '@/questionnaire/helpers';
 
-export type ReportStage = 'received' | 'paid' | 'researching' | 'compiling' | 'ready' | 'failed' | 'expired';
+export type ReportStage =
+  | 'confirming_payment'
+  | 'payment_confirmed'
+  | 'researching'
+  | 'writing'
+  | 'ready'
+  | 'email_sent'
+  | 'failed'
+  | 'expired';
+
+export interface TierStatus {
+  stage: ReportStage;
+  label: string;
+  pdfAvailable: boolean;
+  emailSent: boolean;
+  verdict: string | null;
+}
 
 export interface ReportStatus {
   reportRef: string;
-  stage: ReportStage;
-  emailMasked: string;
+  ideaName: string;
   orderedAt: string;
   expiresAt: string | null;
-  pdfAvailable: boolean;
+  emailMasked: string;
+  isPilot: boolean;
+  standard: TierStatus;
+  detailed: (TierStatus & { purchased: boolean }) | null;
+  upgrade: { price: string; priceNote: string; available: boolean };
   demo: boolean;
 }
 
@@ -29,9 +48,9 @@ export interface CheckoutSession {
 }
 
 export type CheckoutResult =
-  | { state: 'pending' }
-  | { state: 'paid'; reportPath: string | null; message?: string }
-  | { state: 'expired' | 'failed' | 'rejected' };
+  | { state: 'pending'; product?: 'standard' | 'upgrade' }
+  | { state: 'paid'; product?: 'standard' | 'upgrade'; reportPath: string | null; message?: string }
+  | { state: 'expired' | 'failed' | 'rejected'; product?: 'standard' | 'upgrade' };
 
 export class ApiError extends Error {
   status: number;
@@ -113,21 +132,6 @@ function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-const DEMO_STAGE_SECONDS: { stage: ReportStage; after: number }[] = [
-  { stage: 'paid', after: 0 },
-  { stage: 'researching', after: 6 },
-  { stage: 'compiling', after: 14 },
-  { stage: 'ready', after: 22 },
-];
-
-function demoStageFor(order: DemoOrder): ReportStage {
-  if (!order.paidAt) return 'received';
-  const elapsed = (Date.now() - new Date(order.paidAt).getTime()) / 1000;
-  let stage: ReportStage = 'paid';
-  for (const s of DEMO_STAGE_SECONDS) if (elapsed >= s.after) stage = s.stage;
-  return stage;
-}
-
 export function isDemoReference(ref: string): boolean {
   return ref.startsWith('DEMO-');
 }
@@ -174,21 +178,47 @@ export async function getCheckoutResult(sessionId: string): Promise<CheckoutResu
 
 export async function getReportStatus(tokenOrDemoRef: string): Promise<ReportStatus> {
   if (DEMO_MODE && isDemoReference(tokenOrDemoRef)) {
-    await sleep(400);
+    await sleep(300);
     const order = readDemoOrders()[tokenOrDemoRef];
     if (!order) {
       throw new ApiError('No demo report with that reference exists in this browser tab. Demo reports are not stored anywhere else.', 404);
     }
-    const stage = demoStageFor(order);
-    return { reportRef: tokenOrDemoRef, stage, emailMasked: order.emailMasked, orderedAt: order.createdAt, expiresAt: null, pdfAvailable: false, demo: true };
+    // Demo mode does not simulate progress: the pipeline is simply not run.
+    const stage: ReportStage = order.paidAt ? 'payment_confirmed' : 'confirming_payment';
+    const tier: TierStatus = { stage, label: stage === 'payment_confirmed' ? 'Payment confirmed (demo: no processing)' : 'Confirming your payment', pdfAvailable: false, emailSent: false, verdict: null };
+    return { reportRef: tokenOrDemoRef, ideaName: 'Demo idea', orderedAt: order.createdAt, expiresAt: null, emailMasked: order.emailMasked, isPilot: false, standard: tier, detailed: null, upgrade: { price: '£35', priceNote: 'additional, one-time payment', available: false }, demo: true };
   }
   const s = await request<Omit<ReportStatus, 'demo'>>('/api/report-status', { method: 'POST', body: JSON.stringify({ token: tokenOrDemoRef }) });
   return { ...s, demo: false };
 }
 
-/** Live only: returns a short-lived signed URL for the PDF. */
-export async function getReportDownloadUrl(token: string): Promise<{ url: string; expiresInSeconds: number }> {
-  return request('/api/report-download', { method: 'POST', body: JSON.stringify({ token }) });
+export type ReportTier = 'standard' | 'detailed';
+
+/** Live only: structured report data (the detailed tier only after it is purchased). */
+export async function getReportContent<T = unknown>(token: string, tier: ReportTier): Promise<{ tier: ReportTier; reportRef: string; generatedAt: string | null; content: T; financials: FinancialResult }> {
+  return request('/api/report-content', { method: 'POST', body: JSON.stringify({ token, tier }) });
+}
+
+/** Live only: a fresh storage URL for the PDF. Call it on every click; it never shows a deadline to the customer. */
+export async function getReportDownloadUrl(token: string, tier: ReportTier = 'standard'): Promise<{ url: string; tier: ReportTier }> {
+  return request('/api/report-download', { method: 'POST', body: JSON.stringify({ token, tier }) });
+}
+
+/** Live only: start the detailed upgrade purchase (or a pilot upgrade with an owner session). */
+export async function createUpgradeCheckout(token: string): Promise<{ checkoutUrl?: string; reportPath?: string; pilot?: boolean }> {
+  return request('/api/create-upgrade-checkout', { method: 'POST', body: JSON.stringify({ token }), credentials: 'same-origin' });
+}
+
+export interface FinancialResult {
+  currency: string;
+  complete: boolean;
+  missing: string[];
+  contributionPerUnit: number | null;
+  contributionMarginPct: number | null;
+  breakEvenUnits: number | null;
+  breakEvenNote: string;
+  rows: { label: 'Low' | 'Base' | 'High'; units: number; revenue: number; variableCosts: number; contribution: number; fixedCosts: number; profit: number }[];
+  assumptions: { label: string; value: string; basis: 'customer_input' | 'assumption' | 'evidence'; note?: string }[];
 }
 
 export async function requestRecoveryLink(email: string): Promise<{ ok: true; demo: boolean }> {

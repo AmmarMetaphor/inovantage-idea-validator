@@ -89,7 +89,7 @@ function Footer() {
         <div className="site-footer__brand">
           <Wordmark />
           <p className="small muted">
-            Evidence-based feasibility reports for business ideas in the UK, US and Australia.
+            Evidence-based idea validation reports for business ideas in the UK, US and Australia. From {PRICE.display}, one-time.
           </p>
           <p className="small muted">
             Reports are research and general guidance, not financial, legal, tax or investment advice.

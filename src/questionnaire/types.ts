@@ -27,6 +27,11 @@ interface FieldBase {
   /** Optional sub-section heading rendered before this field. */
   sectionHeading?: string;
   sectionIntro?: string;
+  /** Numbered question this field belongs to (1–8). Fields sharing a number render as one question. */
+  question?: number;
+  /** Title of the numbered question; set on the first field of the question. */
+  questionTitle?: string;
+  questionHelp?: string;
 }
 
 export interface TextField extends FieldBase {
@@ -72,8 +77,18 @@ export interface CheckboxField extends FieldBase {
   statement: ReactNode;
 }
 
+/** Searchable single choice with a free-text "Other" fallback. */
+export interface ComboboxField extends FieldBase {
+  type: 'combobox';
+  options: Option[];
+  placeholder?: string;
+  maxLength?: number;
+}
+
 export interface EstimateField extends FieldBase {
   type: 'estimate';
+  /** Text for the "I don't know" checkbox. */
+  unknownLabel?: string;
   /** 'currency' uses the chosen currency symbol; 'count' is a plain number. */
   unit: 'currency' | 'count' | 'hours';
   /** Suffix such as "per month". */
@@ -93,6 +108,7 @@ export type Field =
   | RadioField
   | CheckboxGroupField
   | CheckboxField
+  | ComboboxField
   | EstimateField;
 
 export interface Step {

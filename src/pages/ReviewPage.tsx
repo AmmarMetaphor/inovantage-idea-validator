@@ -5,11 +5,11 @@ import { DemoBadge } from '@/components/DemoBadge';
 import { ConfirmEmailInput } from '@/components/fields';
 import { Notice } from '@/components/Notice';
 import { usePageTitle } from '@/components/usePageTitle';
-import { currencySymbol, PRICE } from '@/config/product';
+import { currencySymbol, DELIVERY_COPY, PRICE } from '@/config/product';
 import { DEMO_MODE } from '@/config/runtime';
 import { createCheckout, createPilotOrder } from '@/lib/api';
 import { asArray, asBool, asEstimate, asString, formatNumber, parseNumberInput } from '@/questionnaire/helpers';
-import { optionLabel, STEPS, visibleFields } from '@/questionnaire/schema';
+import { groupByQuestion, optionLabel, STEPS, visibleFields } from '@/questionnaire/schema';
 import { useQuestionnaire } from '@/questionnaire/store';
 import type { Answers, Field } from '@/questionnaire/types';
 import { firstInvalidStep } from '@/questionnaire/validate';
@@ -24,7 +24,8 @@ function renderValue(field: Field, answers: Answers): { text: string; empty: boo
       return { text: s || 'Not provided', empty: !s };
     }
     case 'select':
-    case 'radio': {
+    case 'radio':
+    case 'combobox': {
       const s = asString(v);
       return { text: s ? optionLabel(field, s) : 'Not chosen', empty: !s };
     }
@@ -36,7 +37,7 @@ function renderValue(field: Field, answers: Answers): { text: string; empty: boo
       return { text: asBool(v) ? 'Confirmed' : 'Not confirmed', empty: !asBool(v) };
     case 'estimate': {
       const est = asEstimate(v);
-      if (est.unknown) return { text: 'Unknown (to be researched)', empty: false };
+      if (est.unknown) return { text: 'Not sure (will be marked as a gap and assumed in the report)', empty: false };
       const n = parseNumberInput(est.value);
       if (n === null) return { text: 'Not provided', empty: true };
       const sym = field.unit === 'currency' ? currencySymbol(asString(answers.currency)) : '';
@@ -120,20 +121,19 @@ export function ReviewPage() {
       )}
 
       <div style={{ marginTop: 'var(--space-6)' }}>
-        {STEPS.map((step, i) => {
-          const fields = visibleFields(step, answers);
-          return (
-            <section key={step.id} className="review-group" aria-labelledby={`review-${step.id}`}>
+        {STEPS.flatMap((step, i) =>
+          groupByQuestion(visibleFields(step, answers)).map((group) => (
+            <section key={`${step.id}-${group.number}`} className="review-group" aria-labelledby={`review-q${group.number}`}>
               <div className="review-group__head">
-                <h2 id={`review-${step.id}`}>
-                  {i + 1}. {step.shortTitle}
+                <h2 id={`review-q${group.number}`}>
+                  {group.number}. {group.title ?? group.fields[0]?.label}
                 </h2>
                 <Link to={`/validate/${i + 1}`} className="review-group__edit">
-                  Edit<span className="visually-hidden"> {step.shortTitle}</span>
+                  Edit<span className="visually-hidden"> question {group.number}</span>
                 </Link>
               </div>
               <dl className="review-list">
-                {fields.map((field) => {
+                {group.fields.map((field) => {
                   const { text, empty } = renderValue(field, answers);
                   return (
                     <div key={field.id} className="review-row">
@@ -144,8 +144,8 @@ export function ReviewPage() {
                 })}
               </dl>
             </section>
-          );
-        })}
+          )),
+        )}
       </div>
 
       <form noValidate onSubmit={handleSubmit} style={{ marginTop: 'var(--space-10)' }}>
@@ -160,7 +160,7 @@ export function ReviewPage() {
           )}
           <h2 style={{ fontSize: 'var(--text-xl)' }}>Where should we send the report?</h2>
           <p className="muted">
-            We will email the report link and PDF to <strong>{email || 'the address you gave'}</strong>.
+            We will email your private report link and PDF to <strong>{email || 'the address you gave'}</strong>.
             Type it again to make sure it is right; there is no account to log into if it is wrong.
           </p>
           <ConfirmEmailInput value={confirmEmail} error={confirmError} onChange={setConfirmEmail} />
@@ -181,7 +181,7 @@ export function ReviewPage() {
               ) : pilot ? (
                 <>Create pilot report (no payment)</>
               ) : (
-                <>Continue to payment · {PRICE.display}</>
+                <>Continue to payment · {PRICE.display} one-time</>
               )}
             </Button>
           </div>
@@ -193,7 +193,7 @@ export function ReviewPage() {
                 <DemoBadge /> No payment will be taken. The next screen simulates checkout.
               </>
             ) : (
-              <>You will be taken to a secure checkout page to pay {PRICE.display}.</>
+              <>You will be taken to a secure checkout page to pay {PRICE.display} (one-time). {DELIVERY_COPY.short}</>
             )}
           </p>
         </div>

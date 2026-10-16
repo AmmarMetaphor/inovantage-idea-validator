@@ -31,7 +31,8 @@ export interface Env {
 
   stripeSecretKey: string;
   stripeWebhookSecret: string;
-  stripePriceId: string;
+  /** Stripe Price IDs per product. Verified against product.ts amounts at checkout. */
+  stripePriceIds: { standard: string; upgrade: string };
 
   anthropicApiKey: string;
   anthropicModel: string;
@@ -54,7 +55,9 @@ export interface Env {
   /** Normalised addresses the pilot may deliver to. Enforced server-side. */
   pilotAllowedEmails: string[];
 
+  /** 0 = no preset expiry (default). A positive number sets report_expires_at at purchase. */
   reportAccessDays: number;
+  /** Lifetime of tokens minted on the checkout return page and by recovery. Email links do not expire. */
   tokenTtlDays: number;
   recoveryTokenTtlDays: number;
 }
@@ -66,11 +69,11 @@ function read(src: Source, name: string): string | undefined {
   return v === undefined || v === '' ? undefined : v;
 }
 
-function readInt(src: Source, name: string, fallback: number): number {
+function readInt(src: Source, name: string, fallback: number, min = 1): number {
   const v = read(src, name);
   if (v === undefined) return fallback;
   const n = Number(v);
-  if (!Number.isInteger(n) || n <= 0) throw new ConfigError([name], `${name} must be a positive integer.`);
+  if (!Number.isInteger(n) || n < min) throw new ConfigError([name], `${name} must be an integer of at least ${min}.`);
   return n;
 }
 
@@ -80,7 +83,7 @@ export type EnvGroup = 'db' | 'stripe' | 'anthropic' | 'email' | 'worker' | 'pil
 
 const GROUPS: Record<EnvGroup, string[]> = {
   db: ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'],
-  stripe: ['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'STRIPE_PRICE_ID'],
+  stripe: ['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'STRIPE_PRICE_ID_STANDARD', 'STRIPE_PRICE_ID_UPGRADE'],
   anthropic: ['ANTHROPIC_API_KEY'],
   email: ['RESEND_API_KEY', 'EMAIL_FROM'],
   worker: ['WORKER_SECRET', 'IP_HASH_SALT'],
@@ -172,7 +175,10 @@ export function loadEnv(groups: EnvGroup[], src: Source = process.env): Env {
     supabaseServiceRoleKey: read(src, 'SUPABASE_SERVICE_ROLE_KEY') ?? '',
     stripeSecretKey: read(src, 'STRIPE_SECRET_KEY') ?? '',
     stripeWebhookSecret: read(src, 'STRIPE_WEBHOOK_SECRET') ?? '',
-    stripePriceId: read(src, 'STRIPE_PRICE_ID') ?? '',
+    stripePriceIds: {
+      standard: read(src, 'STRIPE_PRICE_ID_STANDARD') ?? '',
+      upgrade: read(src, 'STRIPE_PRICE_ID_UPGRADE') ?? '',
+    },
     anthropicApiKey: read(src, 'ANTHROPIC_API_KEY') ?? '',
     anthropicModel: read(src, 'ANTHROPIC_MODEL') ?? 'claude-opus-5-5',
     reportGenerator: generator,
@@ -186,9 +192,9 @@ export function loadEnv(groups: EnvGroup[], src: Source = process.env): Env {
     pilotOwnerPassword: pilotPassword,
     pilotSessionSecret: pilotSecret,
     pilotAllowedEmails,
-    reportAccessDays: readInt(src, 'REPORT_ACCESS_DAYS', 90),
+    reportAccessDays: readInt(src, 'REPORT_ACCESS_DAYS', 0, 0),
     tokenTtlDays: readInt(src, 'TOKEN_TTL_DAYS', 30),
-    recoveryTokenTtlDays: readInt(src, 'RECOVERY_TOKEN_TTL_DAYS', 7),
+    recoveryTokenTtlDays: readInt(src, 'RECOVERY_TOKEN_TTL_DAYS', 30),
   };
 }
 

@@ -197,6 +197,40 @@ export function FieldRenderer({ field, answers, error, onChange }: FieldRenderer
         </FieldShell>
       );
     }
+    case 'combobox': {
+      const s = asString(value);
+      const listId = `${field.id}-options`;
+      const matched = field.options.find((o) => o.value === s || o.label === s);
+      return (
+        <FieldShell id={field.id} label={field.label} help={field.help} error={error} required={field.required}>
+          <input
+            id={field.id}
+            name={field.id}
+            type="text"
+            className="input"
+            list={listId}
+            value={matched ? matched.label : s}
+            maxLength={field.maxLength ?? 80}
+            placeholder={field.placeholder}
+            autoComplete="off"
+            aria-describedby={aria}
+            aria-invalid={invalid}
+            aria-required={field.required || undefined}
+            onChange={(e) => {
+              const typed = e.target.value;
+              const opt = field.options.find((o) => o.label === typed);
+              onChange(field.id, opt && opt.value !== 'other' ? opt.value : typed);
+            }}
+          />
+          <datalist id={listId}>
+            {field.options.filter((o) => o.value !== 'other').map((o) => (
+              <option key={o.value} value={o.label} />
+            ))}
+          </datalist>
+          {s && !matched && <p className="field__hint">Using your own industry: “{s}”.</p>}
+        </FieldShell>
+      );
+    }
     case 'radio': {
       const s = asString(value);
       return (
@@ -304,6 +338,7 @@ export function FieldRenderer({ field, answers, error, onChange }: FieldRenderer
           suffix={field.suffix}
           placeholder={field.placeholder}
           allowUnknown={allowUnknown}
+          unknownLabel={field.unknownLabel ?? 'I don’t know yet'}
           value={est.value}
           unknown={est.unknown}
           onChange={(next) => onChange(field.id, next)}
@@ -337,13 +372,14 @@ interface EstimateInputProps {
   suffix?: string;
   placeholder?: string;
   allowUnknown: boolean;
+  unknownLabel: string;
   value: string;
   unknown: boolean;
   onChange: (next: { value: string; unknown: boolean }) => void;
 }
 
 function EstimateInput(props: EstimateInputProps) {
-  const { id, label, help, error, required, symbol, unit, suffix, placeholder, allowUnknown, value, unknown, onChange } =
+  const { id, label, help, error, required, symbol, unit, suffix, placeholder, allowUnknown, unknownLabel, value, unknown, onChange } =
     props;
   const unknownId = `${id}-unknown`;
   const aria = describedBy(id, help, error);
@@ -363,7 +399,7 @@ function EstimateInput(props: EstimateInputProps) {
             inputMode="decimal"
             className="input input--bare"
             value={unknown ? '' : value}
-            placeholder={unknown ? 'Unknown' : (placeholder ?? (unit === 'count' ? '0' : '0'))}
+            placeholder={unknown ? unknownLabel : (placeholder ?? (unit === 'count' ? '0' : '0'))}
             disabled={unknown}
             aria-describedby={aria}
             aria-invalid={error ? true : undefined}
@@ -384,7 +420,7 @@ function EstimateInput(props: EstimateInputProps) {
               checked={unknown}
               onChange={(e) => onChange({ value: e.target.checked ? '' : value, unknown: e.target.checked })}
             />
-            <span>I don’t know yet</span>
+            <span>{unknownLabel}</span>
           </label>
         )}
       </div>

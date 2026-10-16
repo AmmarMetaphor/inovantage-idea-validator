@@ -83,6 +83,17 @@ export async function ownerSession(req: Request, deps: Deps): Promise<Response> 
   });
 }
 
+/** True when the request carries a valid owner session (used by the upgrade endpoint for pilot orders). */
+export function hasOwnerSession(req: Request, deps: Deps): boolean {
+  if (!deps.env.pilotMode) return false;
+  try {
+    const env = loadEnv(['pilot']);
+    return verifyOwnerSession(readCookie(req, OWNER_COOKIE), env.pilotSessionSecret, deps.now()).ok;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * POST /api/pilot-order { answers, clientRequestId? } → { reportPath, orderRef, created }
  * Validates like the public endpoint, stores the submission as source=pilot,
@@ -131,11 +142,13 @@ export async function createPilotOrder(req: Request, deps: Deps, contextIp?: str
     currency: PRICE.currency,
     stripe_price_id: null,
     source: 'pilot',
+    product: 'standard',
+    parent_order_id: null,
   });
   if (order.source !== 'pilot') throw new HttpError(409, 'not_pilot_order', 'That submission already has a checkout order.');
 
   const now = deps.now();
-  const reportExpiresAt = new Date(now.getTime() + env.reportAccessDays * 86_400_000).toISOString();
+  const reportExpiresAt = env.reportAccessDays > 0 ? new Date(now.getTime() + env.reportAccessDays * 86_400_000).toISOString() : null;
   const authorised = await deps.db.markOrderPaid({ orderId: order.id, paymentIntentId: null, authorisedBy: 'owner_pilot', paidAt: now.toISOString(), reportExpiresAt });
   if (authorised.applied) await deps.db.setSubmissionStatus(submission.id, 'paid');
 

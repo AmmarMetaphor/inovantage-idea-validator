@@ -57,7 +57,7 @@ export function CheckoutReturnPage() {
       <div className="form-page__head">
         <span className="eyebrow">Checkout</span>
         <h1>{result?.state === 'paid' ? 'Payment confirmed' : 'Confirming your payment'}</h1>
-        <p>We are checking with the payment provider. This usually takes a few seconds.</p>
+        <p>We are checking with the payment provider. This usually takes a few seconds. Progress is shown as “Confirming your payment” on your report page until it clears.</p>
       </div>
 
       {!sessionId && (
@@ -77,7 +77,7 @@ export function CheckoutReturnPage() {
 
       {result?.state === 'paid' && !result.reportPath && (
         <Notice tone="success" title="Payment received" role="status">
-          <p>{result.message ?? 'Use the link in your confirmation email to follow your report.'}</p>
+          <p>{result.message ?? 'Use the link in your confirmation email to follow your report.'} {result.product === 'upgrade' ? 'Your detailed report is now being prepared.' : ''}</p>
         </Notice>
       )}
 

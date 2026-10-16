@@ -1,4 +1,4 @@
-import { PRICE } from '../../../src/config/product';
+import { PRODUCTS } from '../../../src/config/product';
 import { hashIp, normaliseEmail, sha256Hex, shortRef } from '../crypto';
 import type { Deps } from '../deps';
 import { clientIp, HttpError, isObject, json, readJson, requireMethod } from '../http';
@@ -65,17 +65,21 @@ export async function createCheckout(req: Request, deps: Deps, contextIp?: strin
 
   const env = deps.env;
   const payments = deps.payments; // validates Stripe configuration or throws a setup error
-  await payments.verifyPrice(env.stripePriceId, { amountMinor: PRICE.amountMinor, currency: PRICE.currency });
+  const product = PRODUCTS.standard;
+  const priceId = env.stripePriceIds.standard;
+  await payments.verifyPrice(priceId, { amountMinor: product.amountMinor, currency: product.currency });
 
   if (submission.source === 'pilot') throw new HttpError(409, 'pilot_submission', 'Pilot submissions are not paid through checkout.');
   const { order } = await deps.db.createOrder({
     submission_id: submission.id,
     email: submission.email,
     email_normalised: submission.email_normalised,
-    amount_minor: PRICE.amountMinor,
-    currency: PRICE.currency,
-    stripe_price_id: env.stripePriceId,
+    amount_minor: product.amountMinor,
+    currency: product.currency,
+    stripe_price_id: priceId,
     source: 'stripe',
+    product: 'standard',
+    parent_order_id: null,
   });
   if (order.source !== 'stripe') throw new HttpError(409, 'order_not_pending', 'This order is not a checkout order.');
   if (order.status !== 'pending_payment' && order.status !== 'expired') {
@@ -84,7 +88,7 @@ export async function createCheckout(req: Request, deps: Deps, contextIp?: strin
 
   const nowUnix = Math.floor(deps.now().getTime() / 1000);
   const session = await payments.createCheckoutSession({
-    priceId: env.stripePriceId,
+    priceId,
     orderId: order.id,
     customerEmail: submission.email,
     successUrl: `${env.appUrl}/checkout/return?session_id={CHECKOUT_SESSION_ID}`,

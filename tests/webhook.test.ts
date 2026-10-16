@@ -78,7 +78,9 @@ describe('Stripe webhook: forged and tampered events', () => {
     const updated = (await h.db.getOrder(order.id))!;
     expect(updated.status).toBe('paid');
     expect(updated.stripe_payment_intent_id).toMatch(/^pi_/);
-    expect(updated.report_expires_at).not.toBeNull();
+    expect(updated.report_expires_at).toBeNull(); // ongoing access by default
+    expect(updated.product).toBe('standard');
+    expect(updated.authorised_by).toBe('stripe_webhook');
     expect(h.db.jobs.size).toBe(1);
     const job = [...h.db.jobs.values()][0];
     expect(job.status).toBe('queued');

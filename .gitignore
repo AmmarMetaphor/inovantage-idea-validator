@@ -33,3 +33,6 @@ screenshots/
 
 # TypeScript incremental build info
 *.tsbuildinfo
+
+# Rendered PDF samples
+samples-out/

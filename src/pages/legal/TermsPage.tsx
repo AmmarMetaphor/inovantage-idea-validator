@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { COMPANY, PRICE, TURNAROUND } from '@/config/product';
+import { COMBINED_TOTAL, COMPANY, DELIVERY_COPY, PRODUCTS } from '@/config/product';
 import { LegalLayout, Placeholder } from './LegalLayout';
 
 export function TermsPage() {
@@ -18,20 +18,24 @@ export function TermsPage() {
           or Australia), based on the answers you submit and desk research from public sources.
         </li>
         <li>
-          The Report is delivered by email as a web link and a PDF to the address you confirm at
-          checkout. No customer account is created.
+          The Report is delivered as a private web report page and a PDF, by email to the address you
+          confirm at checkout. No customer account is created. Access through your private link is
+          ongoing; we do not set a preset expiry.{' '}
+          <Placeholder>owner to confirm the retention period and the deletion-on-request process in the privacy policy</Placeholder>
         </li>
         <li>
-          We aim to deliver {TURNAROUND.label}. This is a target, not a guarantee.{' '}
-          <Placeholder>owner to confirm the delivery commitment and any remedy for delay</Placeholder>
+          {DELIVERY_COPY.long} We do not promise a fixed turnaround.{' '}
+          <Placeholder>owner to confirm any remedy if a report is not produced</Placeholder>
+        </li>
+        <li>
+          Two products: the {PRODUCTS.standard.name} at {PRODUCTS.standard.display} ({PRODUCTS.standard.priceNote}), and the optional {PRODUCTS.upgrade.name} at {PRODUCTS.upgrade.display} ({PRODUCTS.upgrade.priceNote}; {PRODUCTS.standard.display} + {PRODUCTS.upgrade.display} = {COMBINED_TOTAL.display} if both are bought). The upgrade requires a paid standard report for the same submission.
         </li>
       </ul>
 
       <h2>2. Price and payment</h2>
       <ul>
         <li>
-          The price is {PRICE.display} per Report, shown in GBP for all markets, payable in full
-          before research begins.{' '}
+          Prices are shown in GBP for all markets and are payable in full before work begins.{' '}
           <Placeholder>confirm whether price includes VAT/GST and how overseas tax is handled</Placeholder>
         </li>
         <li>

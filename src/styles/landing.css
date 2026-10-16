@@ -178,9 +178,24 @@
 
 @media (min-width: 56em) {
   .pricing {
-    grid-template-columns: 1fr minmax(0, 26rem);
+    grid-template-columns: 1fr minmax(0, 30rem);
     gap: var(--space-16);
   }
+}
+
+.pricing__stack {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.pricing__card--secondary {
+  background: var(--color-sand-100);
+  box-shadow: none;
+  border: 1px solid var(--color-sand-400);
+}
+
+.pricing__name {
+  font-weight: 600;
 }
 
 .pricing__copy {

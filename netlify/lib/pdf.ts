@@ -1,139 +1,420 @@
 /*
-  Render a ReportContent to PDF with pdfkit. Standard fonts only (no font
-  files to ship). Returns a Buffer; the caller stores it in private storage.
+  PDF rendering with pdfkit (standard fonts only).
+
+  renderStandardPdf: exactly two A4 pages. Every block has an explicit
+  position and a height budget; text that would exceed its budget is cut
+  with an ellipsis as a last-resort guard, but the editorial limits in
+  report-schema.ts and the "tighten" re-compose loop in jobs.ts are what keep
+  content inside the budget in practice. Charts are drawn with primitives.
+  Links are clickable (full URL in the annotation even if the display is
+  shortened).
+
+  renderDetailedPdf: flowing multi-page document for the upgrade.
 */
 import PDFDocument from 'pdfkit';
-import { DISCLAIMER, type ReportContent } from './report-schema';
+import { COMPANY, CONSULTATION, PRODUCTS, READINESS_RUBRIC, SCORECARD_DIMENSIONS } from '../../src/config/product';
+import { computeFinancials, formatMoney, readinessScore, type FinancialResult } from './finance';
+import { DISCLAIMER, scoreLabel, VERDICT_TONE, type DetailedReport, type StandardReport } from './report-schema';
 
 export interface PdfMeta {
   orderRef: string;
   marketLabel: string;
   generatedAt: Date;
   generatorName: string;
+  /** Private report page URL for the "open online" link. */
+  reportUrl?: string;
 }
 
 const NAVY = '#0f2440';
+const INK = '#0b1a2e';
 const MUTED = '#4a6a95';
-const SAND = '#c9b58b';
+const GOLD = '#b8995a';
+const SAND = '#e8dcc2';
+const LINE = '#d5deea';
+const TONE: Record<'go' | 'caution' | 'stop' | 'na', { fill: string; text: string }> = {
+  go: { fill: '#e3f3ea', text: '#1f6f4a' },
+  caution: { fill: '#fff3d6', text: '#8a5a00' },
+  stop: { fill: '#fbe7e5', text: '#b3261e' },
+  na: { fill: '#eaf0f7', text: '#4a6a95' },
+};
 
-export async function renderReportPdf(report: ReportContent, meta: PdfMeta): Promise<Buffer> {
-  const doc = new PDFDocument({ size: 'A4', margins: { top: 64, bottom: 64, left: 60, right: 60 }, info: { Title: report.title, Author: 'Inovantage Idea Validator' } });
+const A4 = { w: 595.28, h: 841.89 };
+const M = 36;
+const CW = A4.w - 2 * M;
+
+type Doc = PDFKit.PDFDocument;
+
+function newDoc(title: string): { doc: Doc; done: Promise<Buffer> } {
+  const doc = new PDFDocument({ size: 'A4', margins: { top: M, bottom: M, left: M, right: M }, bufferPages: true, info: { Title: title, Author: `${COMPANY.name} ${COMPANY.productName}` } });
   const chunks: Buffer[] = [];
   doc.on('data', (c: Buffer) => chunks.push(c));
   const done = new Promise<Buffer>((resolve, reject) => {
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
   });
+  return { doc, done };
+}
 
-  const width = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+/** Draw text inside a fixed box; returns the height actually used (≤ h). */
+function box(doc: Doc, text: string, x: number, y: number, w: number, h: number, o: { font?: string; size?: number; color?: string; align?: 'left' | 'center' | 'right'; lineGap?: number; link?: string } = {}): number {
+  doc.font(o.font ?? 'Helvetica').fontSize(o.size ?? 9).fillColor(o.color ?? INK);
+  const opts = { width: w, height: h, ellipsis: true, align: o.align ?? 'left', lineGap: o.lineGap ?? 1.5, link: o.link } as PDFKit.Mixins.TextOptions;
+  const used = Math.min(h, doc.heightOfString(text, opts));
+  doc.text(text, x, y, opts);
+  return used;
+}
 
-  // Cover
-  doc.rect(0, 0, doc.page.width, 160).fill(NAVY);
-  doc.fillColor('#f7f5ef').font('Helvetica').fontSize(10).text('INOVANTAGE  ·  IDEA VALIDATOR', 60, 50, { characterSpacing: 2 });
-  doc.font('Times-Roman').fontSize(26).text('Feasibility report', 60, 78);
-  doc.font('Helvetica').fontSize(10).fillColor('#c8d1de').text(`${meta.marketLabel}  ·  Reference ${meta.orderRef}  ·  ${meta.generatedAt.toISOString().slice(0, 10)}`, 60, 120);
+function label(doc: Doc, text: string, x: number, y: number, color = MUTED): number {
+  doc.font('Helvetica-Bold').fontSize(7.5).fillColor(color).text(text.toUpperCase(), x, y, { characterSpacing: 1.2, lineBreak: false });
+  return 12;
+}
+
+function heading(doc: Doc, text: string, x: number, y: number, w: number): number {
+  doc.font('Times-Roman').fontSize(12.5).fillColor(NAVY).text(text, x, y, { width: w, lineBreak: false });
+  doc.moveTo(x, y + 16).lineTo(x + w, y + 16).lineWidth(0.6).strokeColor(GOLD).stroke();
+  return 22;
+}
+
+function chip(doc: Doc, text: string, x: number, y: number, tone: keyof typeof TONE): number {
+  doc.font('Helvetica-Bold').fontSize(8.5);
+  const w = doc.widthOfString(text) + 14;
+  doc.roundedRect(x, y, w, 16, 8).fill(TONE[tone].fill);
+  doc.fillColor(TONE[tone].text).text(text, x + 7, y + 4, { lineBreak: false });
+  return w;
+}
+
+function footer(doc: Doc, meta: PdfMeta, page: number, total: number) {
+  // The footer sits inside the bottom margin. pdfkit starts a new page for any
+  // text placed past the margin, so lift the margin while drawing it.
+  const savedBottom = doc.page.margins.bottom;
+  doc.page.margins.bottom = 0;
+  const y = A4.h - M + 8;
+  doc.moveTo(M, y - 6).lineTo(A4.w - M, y - 6).lineWidth(0.5).strokeColor(LINE).stroke();
+  doc.font('Helvetica').fontSize(7).fillColor(MUTED).text(`${COMPANY.name} ${COMPANY.productName} · ${meta.orderRef} · Generated ${meta.generatedAt.toISOString().slice(0, 10)}`, M, y, { lineBreak: false });
+  doc.text(`Page ${page} of ${total}`, M, y, { width: CW, align: 'right', lineBreak: false });
   if (meta.generatorName !== 'anthropic') {
-    doc.fillColor('#ffb3ad').font('Helvetica-Bold').fontSize(10).text(`GENERATED BY "${meta.generatorName.toUpperCase()}" — NOT RESEARCH`, 60, 138);
+    doc.font('Helvetica-Bold').fillColor('#b3261e').text(`GENERATED BY "${meta.generatorName.toUpperCase()}" — NOT RESEARCH`, M, y, { width: CW, align: 'center', lineBreak: false });
   }
-  doc.y = 200;
-  doc.fillColor(NAVY).font('Times-Roman').fontSize(22).text(report.title, { width });
-  doc.moveDown(0.8);
+  doc.page.margins.bottom = savedBottom;
+}
 
-  // Verdict box
-  const boxTop = doc.y;
-  doc.rect(60, boxTop, width, 4).fill(SAND);
-  doc.y = boxTop + 14;
-  doc.fillColor(MUTED).font('Helvetica').fontSize(9).text('OVERALL ASSESSMENT', { characterSpacing: 1.5 });
-  doc.fillColor(NAVY).font('Times-Bold').fontSize(18).text(report.verdict.label);
-  doc.moveDown(0.3);
-  doc.fillColor('#0b1a2e').font('Helvetica').fontSize(10.5).text(report.verdict.rationale, { width, lineGap: 2 });
-  doc.moveDown(1);
+/* ---------------------------------------------------------------------------
+   Chart primitives
+--------------------------------------------------------------------------- */
 
-  heading(doc, 'Summary');
-  bullets(doc, report.summary_bullets, width);
-
-  for (const section of report.sections) {
-    doc.moveDown(0.6);
-    heading(doc, section.heading);
-    for (const p of section.paragraphs) {
-      doc.font('Helvetica').fontSize(10.5).fillColor('#0b1a2e').text(p, { width, lineGap: 2, paragraphGap: 6 });
-    }
-    if (section.bullets.length) bullets(doc, section.bullets, width);
-    if (section.table) table(doc, section.table.columns, section.table.rows, width);
+function barChart(doc: Doc, chart: StandardReport['chart'], x: number, y: number, w: number, h: number) {
+  doc.roundedRect(x, y, w, h, 6).lineWidth(0.6).strokeColor(LINE).stroke();
+  const pad = 10;
+  let cy = y + pad;
+  cy += label(doc, chart.kind === 'evidence' ? 'Evidence chart' : chart.kind === 'scenario' ? 'Illustrative scenario' : 'Data gap', x + pad, cy, chart.kind === 'evidence' ? MUTED : GOLD);
+  cy += box(doc, chart.title || 'Market indicator', x + pad, cy, w - 2 * pad, 24, { font: 'Helvetica-Bold', size: 9 }) + 4;
+  const noteH = 30;
+  const plotH = y + h - pad - noteH - cy;
+  if (chart.kind === 'none' || chart.series.length === 0) {
+    box(doc, chart.note || 'No suitable local market data was found for a chart.', x + pad, cy + 8, w - 2 * pad, plotH + noteH, { size: 8.5, color: MUTED });
+    return;
+  } else {
+    const max = Math.max(...chart.series.map((s) => Math.abs(s.value)), 1);
+    const n = chart.series.length;
+    const gap = 6;
+    const bw = (w - 2 * pad - gap * (n - 1)) / n;
+    const base = cy + plotH - 14;
+    chart.series.forEach((s, i) => {
+      const bx = x + pad + i * (bw + gap);
+      const bh = Math.max(2, ((plotH - 26) * Math.abs(s.value)) / max);
+      doc.rect(bx, base - bh, bw, bh).fill(chart.kind === 'evidence' ? NAVY : GOLD);
+      doc.font('Helvetica').fontSize(6.5).fillColor(INK).text(formatCompact(s.value), bx, base - bh - 9, { width: bw, align: 'center', lineBreak: false });
+      doc.fontSize(6.5).fillColor(MUTED).text(s.label, bx - 2, base + 3, { width: bw + 4, align: 'center', height: 9, ellipsis: true });
+    });
+    doc.moveTo(x + pad, base).lineTo(x + w - pad, base).lineWidth(0.5).strokeColor(LINE).stroke();
   }
+  box(doc, `${chart.unit ? chart.unit + '. ' : ''}${chart.note}`, x + pad, y + h - pad - noteH + 2, w - 2 * pad, noteH, { size: 6.8, color: MUTED });
+}
 
-  doc.moveDown(0.6);
-  heading(doc, 'Recommended next steps');
-  report.next_steps.forEach((s, i) => {
-    doc.font('Helvetica').fontSize(10.5).fillColor('#0b1a2e').text(`${i + 1}. ${s}`, { width, lineGap: 2, paragraphGap: 3 });
+function formatCompact(n: number): string {
+  const abs = Math.abs(n);
+  if (abs >= 1e9) return `${(n / 1e9).toFixed(1)}bn`;
+  if (abs >= 1e6) return `${(n / 1e6).toFixed(1)}m`;
+  if (abs >= 1e4) return `${Math.round(n / 1e3)}k`;
+  return Number.isInteger(n) ? String(n) : n.toFixed(1);
+}
+
+/* ---------------------------------------------------------------------------
+   Standard report: two pages
+--------------------------------------------------------------------------- */
+
+export async function renderStandardPdf(report: StandardReport, meta: PdfMeta): Promise<{ pdf: Buffer; pageCount: number }> {
+  const { doc, done } = newDoc(report.title);
+  const fin = computeFinancials({
+    currency: report.financial_inputs.price.unit ? guessCurrency(report) : 'GBP',
+    price: { value: report.financial_inputs.price.value, unit: report.financial_inputs.price.unit || 'sale', basis: report.financial_inputs.price.basis, note: report.financial_inputs.price.note },
+    variableCost: { value: report.financial_inputs.variable_cost.value, unit: report.financial_inputs.variable_cost.unit || 'sale', basis: report.financial_inputs.variable_cost.basis, note: report.financial_inputs.variable_cost.note },
+    fixedMonthly: { value: report.financial_inputs.fixed_monthly.value, unit: 'per month', basis: report.financial_inputs.fixed_monthly.basis, note: report.financial_inputs.fixed_monthly.note },
+    volumes: { ...report.financial_inputs.volumes },
   });
 
-  if (report.assumptions.length) {
-    doc.moveDown(0.6);
-    heading(doc, 'Assumptions');
-    bullets(doc, report.assumptions, width);
-  }
+  /* ---------------- Page 1 ---------------- */
+  // Header band
+  doc.rect(0, 0, A4.w, 86).fill(NAVY);
+  doc.font('Helvetica').fontSize(7.5).fillColor(SAND).text(`${COMPANY.name.toUpperCase()}  ·  ${COMPANY.productName.toUpperCase()}  ·  ${PRODUCTS.standard.name.toUpperCase()}`, M, 18, { characterSpacing: 1.5, lineBreak: false });
+  box(doc, report.title, M, 32, CW - 150, 36, { font: 'Times-Roman', size: 17, color: '#ffffff', lineGap: 0 });
+  box(doc, `${meta.marketLabel}  ·  ${meta.generatedAt.toISOString().slice(0, 10)}  ·  Ref ${meta.orderRef}`, M, 70, CW, 12, { size: 7.5, color: '#c8d1de' });
+  if (meta.reportUrl) box(doc, 'Open web report', A4.w - M - 120, 36, 120, 12, { size: 8, color: SAND, align: 'right', link: meta.reportUrl });
 
-  doc.moveDown(0.6);
-  heading(doc, 'Research gaps');
-  if (report.research_gaps.length) {
-    doc.font('Helvetica').fontSize(9.5).fillColor(MUTED).text('Topics where no reliable public evidence was found. Treat related statements as assumptions.', { width });
-    doc.moveDown(0.3);
-    bullets(doc, report.research_gaps, width);
-  } else {
-    doc.font('Helvetica').fontSize(10.5).fillColor('#0b1a2e').text('None declared by the researcher.', { width });
+  let y = 100;
+  // Idea summary + verdict
+  y += box(doc, report.idea_summary, M, y, CW, 24, { size: 9, color: MUTED }) + 8;
+  const tone = VERDICT_TONE[report.verdict.label];
+  doc.rect(M, y, 4, 62).fill(TONE[tone].text);
+  label(doc, 'Verdict', M + 12, y);
+  doc.font('Times-Bold').fontSize(16).fillColor(NAVY).text(report.verdict.label, M + 12, y + 12, { lineBreak: false });
+  chip(doc, tone === 'go' ? 'GO: test it' : tone === 'caution' ? 'CAUTION: refine' : 'STOP: rethink', M + 12 + doc.widthOfString(report.verdict.label) + 12, y + 13, tone);
+  box(doc, report.verdict.explanation, M + 12, y + 32, CW - 12, 56, { size: 9, lineGap: 1.6 });
+  y += 96;
+
+  // Scorecard (left) + chart (right)
+  const leftW = 300;
+  const rightX = M + leftW + 18;
+  const rightW = CW - leftW - 18;
+  y += heading(doc, 'Readiness scorecard', M, y, leftW);
+  const chartTop = y - 22;
+  const ratings = report.scorecard.map((s) => s.score);
+  const rowH = 33;
+  for (const item of report.scorecard) {
+    const dim = SCORECARD_DIMENSIONS.find((d) => d.id === item.id);
+    doc.font('Helvetica-Bold').fontSize(8.5).fillColor(INK).text(dim?.label ?? item.id, M, y, { width: 95, lineBreak: false });
+    for (let i = 0; i < 5; i += 1) {
+      const filled = item.score !== null && i < item.score;
+      doc.rect(M + 98 + i * 12, y + 1, 9, 9).lineWidth(0.5).strokeColor(filled ? NAVY : LINE).fillAndStroke(filled ? NAVY : '#ffffff', filled ? NAVY : LINE);
+    }
+    const sl = scoreLabel(item.score);
+    chip(doc, sl, M + 164, y - 2, item.score === null ? 'na' : item.score >= 4 ? 'go' : item.score >= 3 ? 'caution' : 'stop');
+    box(doc, item.note, M, y + 12, leftW, 18, { size: 7.5, color: MUTED });
+    y += rowH;
+  }
+  const rs = readinessScore(ratings);
+  y += 2;
+  box(doc, rs.score === null ? `Indicative readiness score: insufficient evidence (${rs.rated} of 5 dimensions rated). ${READINESS_RUBRIC}` : `Indicative readiness score: ${rs.score}/100 (${rs.rated} of 5 dimensions rated). ${READINESS_RUBRIC}`, M, y, leftW, 34, { size: 6.8, color: MUTED });
+  y += 40;
+  barChart(doc, report.chart, rightX, chartTop, rightW, y - chartTop - 6);
+
+  // SWOT
+  y += heading(doc, 'Compact SWOT', M, y, CW);
+  const qW = (CW - 14) / 2;
+  const qH = Math.min(150, (A4.h - M - 24 - y) / 2 - 8);
+  const quads: [string, string[], keyof typeof TONE][] = [
+    ['Strengths', report.swot.strengths, 'go'],
+    ['Weaknesses', report.swot.weaknesses, 'stop'],
+    ['Opportunities', report.swot.opportunities, 'caution'],
+    ['Threats', report.swot.threats, 'na'],
+  ];
+  quads.forEach(([title, items, t], i) => {
+    const qx = M + (i % 2) * (qW + 14);
+    const qy = y + Math.floor(i / 2) * (qH + 8);
+    doc.roundedRect(qx, qy, qW, qH, 5).fill(TONE[t].fill);
+    doc.font('Helvetica-Bold').fontSize(8).fillColor(TONE[t].text).text(title, qx + 8, qy + 6, { lineBreak: false });
+    const text = items.length ? items.map((s) => `• ${s}`).join('\n') : '• None identified from the available evidence';
+    box(doc, text, qx + 8, qy + 18, qW - 16, qH - 22, { size: 7.8, lineGap: 1.2 });
+  });
+  footer(doc, meta, 1, 2);
+
+  /* ---------------- Page 2 ---------------- */
+  doc.addPage();
+  y = M;
+  y += heading(doc, 'Financial scenarios (computed from stated inputs)', M, y, CW);
+  y = financialTable(doc, fin, M, y, CW);
+
+  y += heading(doc, 'Three key risks and how to validate them', M, y, CW);
+  for (const r of report.risks) {
+    doc.font('Helvetica-Bold').fontSize(8).fillColor(INK).text('Risk', M, y, { lineBreak: false });
+    const h1 = box(doc, r.risk, M + 28, y, 230, 22, { size: 8 });
+    doc.font('Helvetica-Bold').fontSize(8).fillColor(INK).text('Validate', M + 272, y, { lineBreak: false });
+    const h2 = box(doc, r.validation_method, M + 312, y, CW - 312, 22, { size: 8 });
+    y += Math.max(h1, h2, 11) + 5;
+  }
+  y += 4;
+
+  const halfW = (CW - 16) / 2;
+  const colTop = y;
+  let ly = colTop + heading(doc, 'Five prioritised improvements', M, colTop, halfW);
+  report.improvements.forEach((s, i) => {
+    ly += box(doc, `${i + 1}. ${s}`, M, ly, halfW, 30, { size: 8 }) + 3;
+  });
+  let ry = colTop + heading(doc, 'A practical validation experiment', M + halfW + 16, colTop, halfW);
+  const ex = report.experiment;
+  ry += box(doc, ex.description, M + halfW + 16, ry, halfW, 44, { size: 8 }) + 4;
+  ry += box(doc, `Budget: ${formatMoney(ex.budget_amount, fin.currency)}   ·   Duration: ${ex.duration}`, M + halfW + 16, ry, halfW, 12, { size: 8, font: 'Helvetica-Bold' }) + 3;
+  ry += box(doc, `Success criterion: ${ex.success_criterion}`, M + halfW + 16, ry, halfW, 32, { size: 8 }) + 2;
+  y = Math.max(ly, ry) + 6;
+
+  // Sources and limitations
+  const ctaH = 72;
+  const srcBottom = A4.h - M - 12 - ctaH;
+  y += heading(doc, 'Sources and research limitations', M, y, CW);
+  const srcW = CW * 0.6;
+  const limX = M + srcW + 14;
+  const limW = CW - srcW - 14;
+  let sy = y;
+  const perSource = Math.max(20, Math.floor((srcBottom - y) / Math.max(report.sources.length, 1)));
+  if (!report.sources.length) sy += box(doc, 'No retrievable sources were found for this idea and market; every statement above is an assumption or a customer input.', M, sy, srcW, 30, { size: 7.5, color: MUTED });
+  for (const s of report.sources) {
+    const metaLine = [s.publisher, s.published_date ?? 'date unknown', s.geography, s.claim_type === 'forecast' ? 'forecast' : s.claim_type === 'historical' ? 'historical' : null].filter(Boolean).join(' · ');
+    const h1 = box(doc, `[${s.index}] ${s.title}${metaLine ? ` — ${metaLine}` : ''}`, M, sy, srcW, Math.min(22, perSource - 9), { size: 7.2 });
+    const h2 = box(doc, s.url, M, sy + h1 + 1, srcW, Math.max(8, perSource - h1 - 4), { size: 6.5, color: MUTED, link: s.url });
+    sy += h1 + h2 + 4;
+    if (sy > srcBottom - 8) break;
+  }
+  let lyy = y;
+  lyy += label(doc, 'Limitations', limX, lyy);
+  lyy += box(doc, report.limitations.map((l) => `• ${l}`).join('\n'), limX, lyy, limW, srcBottom - lyy - 40, { size: 7.3, color: INK, lineGap: 1.2 });
+  box(doc, 'Retrieval date: ' + meta.generatedAt.toISOString().slice(0, 10) + '. Evidence claims cite the numbered sources; assumptions and customer inputs are labelled. ' + DISCLAIMER, limX, Math.max(lyy + 4, srcBottom - 44), limW, 44, { size: 6.4, color: MUTED });
+
+  // CTAs
+  const cy = A4.h - M - 8 - ctaH;
+  doc.roundedRect(M, cy, halfW, ctaH, 6).fill('#f6f4ef');
+  doc.font('Helvetica-Bold').fontSize(8.5).fillColor(NAVY).text('Talk to an expert', M + 10, cy + 8, { lineBreak: false });
+  box(doc, CONSULTATION.text, M + 10, cy + 20, halfW - 20, 46, { size: 7.3, link: CONSULTATION.mailto(meta.orderRef) });
+  doc.roundedRect(M + halfW + 16, cy, halfW, ctaH, 6).fill(NAVY);
+  doc.font('Helvetica-Bold').fontSize(8.5).fillColor('#ffffff').text(`Get the detailed report — ${PRODUCTS.upgrade.display} additional`, M + halfW + 26, cy + 8, { lineBreak: false });
+  box(doc, `Nine sections: sizing methodology, segments, competitor comparison, pricing and route to market, cost assumptions, cash-flow and break-even scenarios, sensitivity, launch roadmap, sources. ${PRODUCTS.upgrade.display} is additional to the ${PRODUCTS.standard.display} you have paid (${PRODUCTS.standard.display} + ${PRODUCTS.upgrade.display} = £52 in total).${meta.reportUrl ? ' Open your report page to upgrade.' : ''}`, M + halfW + 26, cy + 20, halfW - 20, 48, { size: 7.2, color: '#e3e9f2', link: meta.reportUrl });
+  footer(doc, meta, 2, 2);
+
+  const pageCount = doc.bufferedPageRange().count;
+  doc.end();
+  return { pdf: await done, pageCount };
+}
+
+function guessCurrency(report: StandardReport): string {
+  const n = report.financial_inputs.price.note + report.financial_inputs.fixed_monthly.note;
+  if (/\bAUD|A\$/.test(n)) return 'AUD';
+  if (/\bUSD|\$/.test(n)) return 'USD';
+  return 'GBP';
+}
+
+function financialTable(doc: Doc, fin: FinancialResult, x: number, y: number, w: number): number {
+  const cols = ['Scenario', 'Units / month', 'Revenue', 'Contribution', 'Fixed costs', 'Profit / month'];
+  const cw = [70, 80, 90, 95, 90, w - 425];
+  const row = (cells: string[], bold: boolean, yy: number, shade?: string) => {
+    if (shade) doc.rect(x, yy - 2, w, 13).fill(shade);
+    let cx = x;
+    cells.forEach((c, i) => {
+      doc.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(7.8).fillColor(bold ? MUTED : INK).text(c, cx + 3, yy, { width: cw[i] - 6, align: i === 0 ? 'left' : 'right', lineBreak: false });
+      cx += cw[i];
+    });
+    return 13;
+  };
+  y += row(cols, true, y, '#f1e9d8');
+  for (const r of fin.rows) {
+    y += row([r.label, r.units.toLocaleString('en-GB'), formatMoney(r.revenue, fin.currency), formatMoney(r.contribution, fin.currency), formatMoney(r.fixedCosts, fin.currency), (r.profit < 0 ? '−' : '') + formatMoney(Math.abs(r.profit), fin.currency)], false, y, r.label === 'Base' ? '#fbfaf6' : undefined);
+  }
+  y += 2;
+  y += box(doc, `Break-even: ${fin.breakEvenNote}${fin.contributionMarginPct !== null ? ` Contribution margin ${fin.contributionMarginPct.toFixed(0)}%.` : ''}`, x, y, w, 24, { size: 7.6, font: 'Helvetica-Bold', color: fin.breakEvenUnits === null ? '#8a5a00' : INK }) + 3;
+  const assum = fin.assumptions.map((a) => `${a.label}: ${a.value} (${a.basis.replace('_', ' ')}${a.note ? `; ${a.note}` : ''})`).join('   ·   ');
+  y += box(doc, `Assumptions: ${assum}`, x, y, w, 34, { size: 6.9, color: MUTED }) + 8;
+  return y;
+}
+
+/* ---------------------------------------------------------------------------
+   Detailed report: flowing pages
+--------------------------------------------------------------------------- */
+
+export async function renderDetailedPdf(report: DetailedReport, meta: PdfMeta): Promise<{ pdf: Buffer; pageCount: number }> {
+  const { doc, done } = newDoc(report.title);
+  const width = CW;
+  const fin = computeFinancials({
+    currency: 'GBP',
+    price: { value: report.financial_inputs.price.value, unit: report.financial_inputs.price.unit || 'sale', basis: report.financial_inputs.price.basis, note: report.financial_inputs.price.note },
+    variableCost: { value: report.financial_inputs.variable_cost.value, unit: report.financial_inputs.variable_cost.unit || 'sale', basis: report.financial_inputs.variable_cost.basis, note: report.financial_inputs.variable_cost.note },
+    fixedMonthly: { value: report.financial_inputs.fixed_monthly.value, unit: 'per month', basis: report.financial_inputs.fixed_monthly.basis, note: report.financial_inputs.fixed_monthly.note },
+    volumes: { ...report.financial_inputs.volumes },
+  });
+
+  doc.rect(0, 0, A4.w, 150).fill(NAVY);
+  doc.font('Helvetica').fontSize(8).fillColor(SAND).text(`${COMPANY.name.toUpperCase()}  ·  ${PRODUCTS.upgrade.name.toUpperCase()}`, M, 40, { characterSpacing: 1.5 });
+  doc.font('Times-Roman').fontSize(22).fillColor('#ffffff').text(report.title, M, 62, { width });
+  doc.font('Helvetica').fontSize(8.5).fillColor('#c8d1de').text(`${meta.marketLabel}  ·  ${meta.generatedAt.toISOString().slice(0, 10)}  ·  Ref ${meta.orderRef}`, M, 122);
+  doc.y = 175;
+  doc.x = M;
+  const h2 = (t: string) => {
+    if (doc.y > A4.h - 120) doc.addPage();
+    doc.moveDown(0.6);
+    doc.font('Times-Roman').fontSize(14).fillColor(NAVY).text(t, { width });
+    doc.moveTo(M, doc.y + 2).lineTo(M + width, doc.y + 2).lineWidth(0.6).strokeColor(GOLD).stroke();
+    doc.moveDown(0.5);
+  };
+  const para = (t: string) => doc.font('Helvetica').fontSize(9.5).fillColor(INK).text(t, { width, lineGap: 2, paragraphGap: 5 });
+  const bullets = (items: string[]) => items.forEach((b) => doc.font('Helvetica').fontSize(9.5).fillColor(INK).text(`•  ${b}`, { width, lineGap: 1.5, paragraphGap: 2 }));
+
+  h2('Executive summary');
+  bullets(report.executive_summary);
+
+  for (const s of report.sections) {
+    h2(s.heading);
+    for (const p of s.paragraphs) para(p);
+    if (s.bullets.length) bullets(s.bullets);
+    if (s.table) table(doc, s.table.columns, s.table.rows, width);
+    if (s.id === 'financial_scenarios') {
+      doc.moveDown(0.4);
+      doc.font('Helvetica-Bold').fontSize(9).fillColor(MUTED).text('Scenario table computed from the stated inputs', { width });
+      doc.moveDown(0.3);
+      if (doc.y > A4.h - 160) doc.addPage();
+      doc.y = financialTable(doc, fin, M, doc.y, width);
+      doc.x = M;
+    }
+    if (s.id === 'sensitivity_risks' && report.sensitivity.length) {
+      table(doc, ['Change', 'Effect'], report.sensitivity.map((r) => [r.change, r.effect]), width);
+    }
+    if (s.id === 'sources_limitations') {
+      for (const src of report.sources) {
+        const metaLine = [src.publisher, src.published_date ?? 'date unknown', src.geography, src.period, src.claim_type].filter(Boolean).join(' · ');
+        doc.font('Helvetica').fontSize(8).fillColor(INK).text(`[${src.index}] ${src.title} — ${metaLine}`, { width });
+        doc.font('Helvetica').fontSize(7.5).fillColor(MUTED).text(src.url, { width, link: src.url, paragraphGap: 3 });
+      }
+      doc.moveDown(0.3);
+      doc.font('Helvetica-Bold').fontSize(9).fillColor(MUTED).text('Limitations', { width });
+      bullets(report.limitations);
+    }
   }
 
   if (report.claims.length) {
-    doc.moveDown(0.6);
-    heading(doc, 'Evidence and basis of claims');
-    doc.font('Helvetica').fontSize(8.5).fillColor(MUTED).text('Each claim is tagged with its basis. Evidence claims cite public sources; assumptions were not verified.', { width });
-    doc.moveDown(0.4);
+    h2('Evidence and basis of claims');
+    doc.font('Helvetica').fontSize(8).fillColor(MUTED).text('Each claim is tagged with its basis. Evidence claims cite the numbered sources; assumptions were not verified.', { width });
+    doc.moveDown(0.3);
     for (const c of report.claims) {
-      const tag = c.kind === 'evidence' && c.evidence_date ? `[${c.kind}, ${c.confidence} confidence, ${c.evidence_date}] ` : `[${c.kind}, ${c.confidence} confidence] `;
-      doc.font('Helvetica-Bold').fontSize(8.5).fillColor(NAVY).text(tag, { continued: true });
-      doc.font('Helvetica').fillColor('#0b1a2e').text(c.text, { width, lineGap: 1 });
-      if (c.source_urls.length) doc.font('Helvetica').fontSize(7.5).fillColor(MUTED).text(c.source_urls.join('  ·  '), { width });
-      doc.moveDown(0.3);
+      const tag = `[${c.kind}, ${c.confidence}${c.evidence_date ? `, ${c.evidence_date}` : ''}${c.source_indexes.length ? `, sources ${c.source_indexes.join(',')}` : ''}] `;
+      doc.font('Helvetica-Bold').fontSize(7.8).fillColor(NAVY).text(tag, { continued: true, width });
+      doc.font('Helvetica').fillColor(INK).text(c.text, { width, paragraphGap: 2 });
     }
   }
 
-  doc.moveDown(0.8);
-  heading(doc, 'Limitations');
-  doc.font('Helvetica').fontSize(10).fillColor('#0b1a2e').text(report.limitations, { width, lineGap: 2 });
+  h2('Talk to an expert');
+  doc.font('Helvetica').fontSize(9.5).fillColor(INK).text(CONSULTATION.text, { width, link: CONSULTATION.mailto(meta.orderRef) });
   doc.moveDown(0.6);
-  doc.font('Helvetica-Oblique').fontSize(8.5).fillColor(MUTED).text(DISCLAIMER, { width });
+  doc.font('Helvetica-Oblique').fontSize(7.8).fillColor(MUTED).text(DISCLAIMER, { width });
 
-  doc.end();
-  return done;
-}
-
-function heading(doc: PDFKit.PDFDocument, text: string) {
-  doc.font('Times-Roman').fontSize(15).fillColor(NAVY).text(text);
-  doc.moveDown(0.3);
-}
-
-function bullets(doc: PDFKit.PDFDocument, items: string[], width: number) {
-  for (const b of items) {
-    doc.font('Helvetica').fontSize(10.5).fillColor('#0b1a2e').text(`•  ${b}`, { width, indent: 0, lineGap: 2, paragraphGap: 3 });
+  const range = doc.bufferedPageRange();
+  for (let i = 0; i < range.count; i += 1) {
+    doc.switchToPage(i);
+    footer(doc, meta, i + 1, range.count);
   }
+  doc.end();
+  return { pdf: await done, pageCount: range.count };
 }
 
-function table(doc: PDFKit.PDFDocument, columns: string[], rows: string[][], width: number) {
+function table(doc: Doc, columns: string[], rows: string[][], width: number) {
   const colW = width / columns.length;
-  const x0 = doc.page.margins.left;
   const drawRow = (cells: string[], bold: boolean) => {
+    if (doc.y > A4.h - 90) doc.addPage();
     const y = doc.y;
     let h = 0;
     cells.forEach((cell, i) => {
-      doc.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(9).fillColor(bold ? MUTED : '#0b1a2e');
-      const cellH = doc.heightOfString(cell ?? '', { width: colW - 8 });
-      h = Math.max(h, cellH);
-      doc.text(cell ?? '', x0 + i * colW + 4, y + 4, { width: colW - 8 });
+      doc.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(8.5).fillColor(bold ? MUTED : INK);
+      h = Math.max(h, doc.heightOfString(cell ?? '', { width: colW - 8 }));
+      doc.text(cell ?? '', M + i * colW + 4, y + 4, { width: colW - 8 });
     });
-    doc.y = y + h + 10;
-    doc.moveTo(x0, doc.y - 2).lineTo(x0 + width, doc.y - 2).lineWidth(0.5).strokeColor('#d5deea').stroke();
-    doc.x = x0;
+    doc.y = y + h + 9;
+    doc.moveTo(M, doc.y - 2).lineTo(M + width, doc.y - 2).lineWidth(0.5).strokeColor(LINE).stroke();
+    doc.x = M;
   };
   doc.moveDown(0.3);
   drawRow(columns, true);

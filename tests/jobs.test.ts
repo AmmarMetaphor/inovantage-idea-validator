@@ -15,7 +15,7 @@ function jobDeps(h: Harness) {
   return {
     db: h.db, blobs: h.blobs, mailer: h.mailer, generator: h.generator, log: h.deps.log, now: h.deps.now,
     appUrl: 'https://app.test', tokenTtlDays: 30, heartbeatMs: 60_000, pilotAllowedEmails: ['support@metaphorconsultants.com'],
-    renderPdf: async () => Buffer.from('%PDF-1.4 test'),
+    renderStandard: async () => ({ pdf: Buffer.from('%PDF-1.4 test'), pageCount: 2 }),
   };
 }
 
@@ -70,7 +70,7 @@ describe('Job pipeline: stages, checkpoints and retries', () => {
     const h = makeHarness();
     const { job } = await paidJob(h);
     let renders = 0;
-    const deps = { ...jobDeps(h), renderPdf: async () => { renders += 1; return Buffer.from('%PDF'); } };
+    const deps = { ...jobDeps(h), renderStandard: async () => { renders += 1; return { pdf: Buffer.from('%PDF'), pageCount: 2 }; } };
     // Confirmation goes out; the report email fails.
     h.mailer.send = (function (orig) {
       return async function (this: typeof h.mailer, m: Parameters<typeof orig>[0]) {

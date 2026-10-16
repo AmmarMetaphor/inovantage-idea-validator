@@ -4,7 +4,7 @@ import { Button } from '@/components/Button';
 import { DemoBadge } from '@/components/DemoBadge';
 import { Notice } from '@/components/Notice';
 import { usePageTitle } from '@/components/usePageTitle';
-import { PRICE } from '@/config/product';
+import { PRICE, PRODUCTS } from '@/config/product';
 import { DEMO_MODE } from '@/config/runtime';
 import { demoCompletePayment } from '@/lib/api';
 import { asString, maskEmail } from '@/questionnaire/helpers';
@@ -26,6 +26,7 @@ export function CheckoutPage() {
   const { answers, reset } = useQuestionnaire();
   const reportId = params.get('report') ?? '';
   const status = params.get('status');
+  const isUpgrade = params.get('upgrade') === '1';
   const [busy, setBusy] = useState<'pay' | 'cancel' | null>(null);
   const [error, setError] = useState<string>();
 
@@ -37,12 +38,14 @@ export function CheckoutPage() {
       <div className="container container--form form-page page-enter stack-lg">
         <div className="form-page__head">
           <h1>Payment cancelled</h1>
-          <p>No payment was taken. Your answers are still here if you want to continue.</p>
+          <p>{isUpgrade ? 'No payment was taken. Your standard report is unchanged; use the link in your email to return to it.' : 'No payment was taken. Your answers are still here if you want to continue.'}</p>
         </div>
         <div className="cluster">
-          <Link to="/review" className="btn btn--primary btn--md">
-            Return to review
-          </Link>
+          {!isUpgrade && (
+            <Link to="/review" className="btn btn--primary btn--md">
+              Return to review
+            </Link>
+          )}
           <Link to="/" className="btn btn--secondary btn--md">
             Back to home
           </Link>
@@ -121,9 +124,9 @@ export function CheckoutPage() {
         </h2>
         <dl className="kv">
           <dt>Product</dt>
-          <dd>Idea feasibility report{ideaName ? ` — ${ideaName}` : ''}</dd>
+          <dd>{PRODUCTS.standard.name}{ideaName ? ` — ${ideaName}` : ''}</dd>
           <dt>Price</dt>
-          <dd>{PRICE.display} (one-off)</dd>
+          <dd>{PRICE.display} ({PRODUCTS.standard.priceNote})</dd>
           <dt>Report sent to</dt>
           <dd>{email ? maskEmail(email) : 'the address you confirmed'}</dd>
           <dt>Reference</dt>

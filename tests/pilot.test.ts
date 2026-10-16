@@ -46,7 +46,7 @@ function jobDeps(h: Harness) {
   return {
     db: h.db, blobs: h.blobs, mailer: h.mailer, generator: h.generator, log: h.deps.log, now: h.deps.now,
     appUrl: 'https://app.test', tokenTtlDays: 30, heartbeatMs: 60_000, pilotAllowedEmails: [ALLOWED],
-    renderPdf: async () => Buffer.from('%PDF-1.4 pilot'),
+    renderStandard: async () => ({ pdf: Buffer.from('%PDF-1.4 pilot'), pageCount: 2 }),
   };
 }
 
@@ -152,7 +152,7 @@ describe('Pilot orders', () => {
     // The owner's link works like a customer's: no account, status then download.
     const token = body.reportPath.replace('/report/', '');
     const status = await reportStatus(post('/api/report-status', { token }), h.deps);
-    expect(((await status.json()) as { stage: string }).stage).toBe('paid');
+    expect(((await status.json()) as { standard: { stage: string } }).standard.stage).toBe('payment_confirmed');
   });
 
   it('a duplicate submission (same clientRequestId) never creates a second order, job or email', async () => {
@@ -192,6 +192,7 @@ describe('Pilot orders', () => {
     const dl = await reportDownload(post('/api/report-download', { token }), h.deps);
     expect(dl.status).toBe(200);
     expect(((await dl.json()) as { url: string }).url).toContain(report.pdf_object_path!);
+    expect(report.page_count).toBe(2);
   });
 
   it('the pipeline refuses to email a pilot order to a non-allowlisted address even if the row was altered', async () => {

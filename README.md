@@ -1,8 +1,9 @@
 # Inovantage Idea Validator
 
-Frontend for a pay-once business idea feasibility report. A customer answers a
-six-step questionnaire about their idea and circumstances, pays £24, and
-receives an evidence-based report by email with a PDF. No account required.
+A pay-once business idea validation report. A customer answers eight questions
+over three short screens, pays £17, and receives an evidence-based two-page
+report (interactive web version and PDF) on a private link, with an optional
+detailed report upgrade for £35 additional (£52 combined). No account required.
 Markets: UK, US and Australia.
 
 The frontend runs in a labelled **demo mode** out of the box (no backend
@@ -62,7 +63,7 @@ every variable; the two that matter for a local preview are:
 | Variable             | Default | Meaning                                                   |
 | -------------------- | ------- | --------------------------------------------------------- |
 | `VITE_DEMO_MODE`     | `true`  | Simulate checkout and processing. Only `"false"` turns it off, and the production build refuses to run unless it is `false`. |
-| `VITE_DRAFT_STORAGE` | `none`  | `session` keeps questionnaire answers in this tab only. localStorage is never used. |
+| `VITE_DRAFT_STORAGE` | `session` | Keeps the draft in this tab across refreshes. `none` keeps it in memory only. localStorage is never used. |
 
 Backend variables (Supabase, Stripe, Anthropic, Resend, worker secret) are
 server-side only and are listed in `.env.example` and `docs/BACKEND.md`.
@@ -110,8 +111,9 @@ docs/BACKEND.md  Setup, environment variables, endpoints, operations
 - **Live mode** (`VITE_DEMO_MODE=false`): the browser calls the Netlify
   Functions. Payment goes through Stripe's hosted checkout; the webhook (and
   only server-side verification) fulfils the order; a background worker
-  researches, writes, renders and emails the report; status and download are
-  unlocked by an unguessable, hashed, expiring token from the email link.
+  researches, writes, renders a two-page PDF and emails the report; the web
+  report, status and downloads are unlocked by an unguessable, hashed token
+  from the email link that does not expire.
 
 Still to be done by the owner before launch: apply the migrations and set the
 environment variables (`docs/BACKEND.md`), review the draft legal pages, and

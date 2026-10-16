@@ -14,7 +14,7 @@ export function Stepper({ current, furthest, completed }: StepperProps) {
     <nav className="stepper" aria-label="Questionnaire progress">
       <p className="stepper__summary">
         <span className="stepper__count">
-          Step {current + 1} of {STEPS.length}
+          Screen {current + 1} of {STEPS.length}
         </span>
         <span className="stepper__current">{STEPS[current].shortTitle}</span>
       </p>

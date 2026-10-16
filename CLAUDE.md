@@ -12,10 +12,13 @@ downloadable PDF. No customer account exists or is planned.
 - **Audience:** first-time founders, existing business owners, early-stage startups.
 - **Markets:** United Kingdom, United States, Australia. One report covers one
   idea in one primary market.
-- **Price:** working price £24 per report, charged once, in GBP for all markets.
-  Lives in `src/config/product.ts` (`PRICE`); never hard-code it in copy.
-- **Delivery:** email with a link to a status page and a PDF attachment.
-  Target turnaround is in `TURNAROUND` in the same file.
+- **Products:** `PRODUCTS` in `src/config/product.ts` is the single source of
+  truth for UI and server: Idea Validation Report £17 (1700 GBP) and the
+  Detailed Report Upgrade £35 **additional** (3500 GBP; £52 combined). Never
+  hard-code prices in copy; always say the upgrade is additional.
+- **Delivery:** a private report page (interactive web report + PDF download)
+  and an email with the PDF attached. No turnaround promise anywhere: use
+  `DELIVERY_COPY` ("We'll email you when your report is ready").
 - **Report-link recovery:** a customer who lost the email enters their address
   on `/find-report`; the backend re-sends. The page never reveals report data.
 
@@ -36,22 +39,26 @@ downloadable PDF. No customer account exists or is planned.
 
 ## Questionnaire
 
-Defined declaratively in `src/questionnaire/schema.ts`. Six steps:
+Defined declaratively in `src/questionnaire/schema.ts` (version 2): eight
+numbered questions over three screens. Fields sharing a `question` number
+render as one compact question.
 
-1. Idea, industry, business stage, problem, offer.
-2. Customer, B2B/B2C, country, region/city, service area, alternatives.
-3. Price and currency, revenue model, competitors, differentiation.
-4. Capital, hours per week, experience, team/assets, income objective,
-   timeframe. **Conditional:** existing businesses (stage `trading-new` or
-   `trading-established`) are also asked about revenue, costs, customers and
-   expansion plans.
-5. Start-up, fixed and per-sale costs, acquisition plan, evidence of demand.
-6. Constraints, biggest concern, email, required acknowledgements.
+1. Business idea and problem solved (plus optional working name).
+2. Industry (searchable combobox; typed values are kept as "Other").
+3. Operating market (UK/US/AU) and city/region.
+4. Target customer and reason to be chosen.
+5. Revenue model and expected price ("Not sure" allowed).
+6. Founder resources: budget, weekly time, experience.
+7. Current stage, validation attempted, evidence.
+8. Email and the two acknowledgements.
+
+`schema-v1.ts` keeps the old six-step schema so reports for existing
+submissions (`answers_version = 1`) can still be built. Do not delete it.
 
 Rules:
 
-- Every numeric estimate is an `estimate` field with an "I don't know yet"
-  option. Do not add numeric fields that forbid "unknown" without a reason.
+- Every numeric estimate is an `estimate` field with a "Not sure" option and
+  the report lists unknowns as gaps. Do not add compulsory sub-questions.
 - Required fields are validated per step in `validate.ts`; the error summary at
   the top of the step links to each field. Back/edit navigation is always
   available (stepper, Back button, Edit links on review).
@@ -60,9 +67,10 @@ Rules:
 
 ## State and privacy
 
-- Answers live in React state (`src/questionnaire/store.tsx`). **Nothing is
-  written to `localStorage`.** Session-only persistence can be switched on with
-  `VITE_DRAFT_STORAGE=session`; it uses `sessionStorage` for the current tab.
+- Answers live in React state (`src/questionnaire/store.tsx`) and, by
+  default, in `sessionStorage` for the current tab so a refresh keeps the
+  draft (`VITE_DRAFT_STORAGE=none` disables). **Nothing is written to
+  `localStorage`.**
 - After a simulated payment the demo keeps only a report reference, a masked
   email and timestamps in `sessionStorage`, never the answers.
 - No analytics, tracking or third-party scripts are loaded. The page sets
@@ -79,8 +87,8 @@ In demo mode:
 - A banner at the top of every page says checkout and processing are simulated.
 - `createCheckout` returns an internal `/checkout?report=DEMO-…` route with
   "Simulate successful payment" and "Simulate cancelled payment" buttons.
-- The status page walks through paid → researching → compiling → ready over
-  about 22 seconds and then states that no PDF was generated.
+- The status page shows the real stage names but does not simulate progress:
+  a demo order stays at "Payment confirmed (demo: no processing)".
 - Recovery requests succeed without sending anything.
 
 Never show simulated output as if it were a real customer report. Any mock
@@ -141,7 +149,19 @@ Read `docs/BACKEND.md` before touching `netlify/` or `supabase/`.
 - **Jobs.** `claim_job` is atomic; stages `confirm → research → compose →
   render → deliver` are idempotent and checkpointed; retries are bounded
   with backoff; the scheduled dispatcher recovers expired leases. A change
-  to a stage must keep it safe to re-run.
+  to a stage must keep it safe to re-run. The standard PDF must be exactly
+  two pages (`ReportTooLong` triggers a tighter re-compose).
+- **Products.** Orders are unique per (submission, product); upgrade orders
+  carry `parent_order_id` and are fulfilled only if the parent is paid. Any
+  token for a submission's orders opens the same report page; premium
+  content is returned only when the upgrade order is paid.
+- **Reports.** `netlify/lib/report-schema.ts` holds the Zod schemas with
+  editorial limits; `finance.ts` computes every scenario figure in code;
+  `pdf.ts` renders the two-page standard and flowing detailed PDFs. Never let
+  the model write financial tables or statistics without a listed source.
+- **Access.** Email-delivered tokens do not expire; no purchase-access
+  expiry by default; downloads mint fresh storage URLs on every click with
+  no customer-facing deadline. Revocation and deletion: `scripts/delete-order.mjs`.
 - **Migrations.** Add a new file under `supabase/migrations/` with the next
   timestamp; never edit an applied one (0001–0004 are applied in
   production; 0005 adds pilot columns). Every new table gets RLS enabled and
@@ -162,8 +182,10 @@ Read `docs/BACKEND.md` before touching `netlify/` or `supabase/`.
   `delivery_attempts`. Keep all four when touching the flow.
 - **Tests.** `tests/` cover forged/duplicate/concurrent payment events,
   unpaid and cross-customer access, link recovery, interrupted jobs,
-  bounded retries, the owner session and pilot allowlist. Add a test for
-  every new trust boundary.
+  bounded retries, the owner session and pilot allowlist, standard and
+  upgrade pricing, unpaid premium content, real progress states, the
+  two-page guard, finance maths and the eight-question schema. Add a test
+  for every new trust boundary. `npm run pdf:samples` renders inspection PDFs.
 
 ## What remains for the owner
 

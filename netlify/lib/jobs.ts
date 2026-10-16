@@ -4,12 +4,14 @@
   database before doing work, so a retry after a crash (or a worker whose
   lease expired mid-stage) resumes without repeating finished stages.
 
-  Stages:
-    confirm  → order-confirmation email with status link
-    research → gather sources (research_sources)
-    compose  → write the structured report (reports.content, report_claims)
-    render   → PDF to private storage (reports.pdf_object_path)
-    deliver  → report email with PDF attached
+  Stages (both products):
+    confirm  → order-confirmation email with the private report link
+    research → gather sources (research_sources); the upgrade reuses the
+               standard order's sources and adds a deeper pass
+    compose  → structured report (reports.content, report_claims)
+    render   → PDF to private storage; the standard report must be exactly
+               two pages, otherwise compose is re-run with a tighten hint
+    deliver  → report email with PDF attached and the web link
     done
 */
 import { MARKETS } from '../../src/config/product';
@@ -19,8 +21,8 @@ import type { BlobStore, Db, Job, JobStage, Json, Order } from './db/types';
 import { confirmationEmail, ownerAlertEmail, reportReadyEmail } from './emails';
 import type { Logger } from './log';
 import type { Mailer } from './mailer';
-import { renderReportPdf } from './pdf';
-import { ReportContentSchema, type ReportContent } from './report-schema';
+import { renderDetailedPdf, renderStandardPdf, type PdfMeta } from './pdf';
+import { DetailedReportSchema, StandardReportSchema, type StandardReport } from './report-schema';
 import { buildBrief, NonRetryableGenerationError, type ReportGenerator } from './research';
 import { mintAccessToken } from './tokens';
 
@@ -29,7 +31,8 @@ export interface JobDeps {
   blobs: BlobStore;
   mailer: Mailer;
   generator: ReportGenerator;
-  renderPdf?: typeof renderReportPdf;
+  renderStandard?: typeof renderStandardPdf;
+  renderDetailed?: typeof renderDetailedPdf;
   log: Logger;
   now: () => Date;
   appUrl: string;
@@ -41,22 +44,9 @@ export interface JobDeps {
   heartbeatMs?: number;
 }
 
-/** Thrown when a pilot order would be delivered outside the allowlist. */
-export class PilotDeliveryBlocked extends NonRetryableGenerationError {
-  constructor() {
-    super('pilot order delivery address is not on the allowlist');
-    this.name = 'PilotDeliveryBlocked';
-  }
-}
-
-export function assertPilotDeliveryAllowed(order: Pick<Order, 'source' | 'email'>, to: string, allowlist: string[]): void {
-  if (order.source !== 'pilot') return;
-  const target = to.trim().toLowerCase();
-  if (!allowlist.includes(target) || target !== order.email.trim().toLowerCase()) throw new PilotDeliveryBlocked();
-}
-
 export const DEFAULT_LEASE_SECONDS = 600;
 export const BACKOFF_MINUTES = [1, 5, 15, 60, 180];
+const MAX_TIGHTEN = 2;
 
 export type RunOutcome =
   | { status: 'not_claimed' }
@@ -70,6 +60,28 @@ function nextStage(stage: JobStage): JobStage {
   return ORDER[Math.min(ORDER.indexOf(stage) + 1, ORDER.length - 1)];
 }
 
+/** Thrown when a pilot order would be delivered outside the allowlist. */
+export class PilotDeliveryBlocked extends NonRetryableGenerationError {
+  constructor() {
+    super('pilot order delivery address is not on the allowlist');
+    this.name = 'PilotDeliveryBlocked';
+  }
+}
+
+/** Thrown by render when the standard PDF is not exactly two pages. */
+export class ReportTooLong extends Error {
+  constructor(public pages: number) {
+    super(`standard report rendered to ${pages} pages`);
+    this.name = 'ReportTooLong';
+  }
+}
+
+export function assertPilotDeliveryAllowed(order: Pick<Order, 'source' | 'email'>, to: string, allowlist: string[]): void {
+  if (order.source !== 'pilot') return;
+  const target = to.trim().toLowerCase();
+  if (!allowlist.includes(target) || target !== order.email.trim().toLowerCase()) throw new PilotDeliveryBlocked();
+}
+
 export async function runJob(deps: JobDeps, jobId: string, workerId: string): Promise<RunOutcome> {
   const { db, log } = deps;
   const lease = deps.leaseSeconds ?? DEFAULT_LEASE_SECONDS;
@@ -81,7 +93,6 @@ export async function runJob(deps: JobDeps, jobId: string, workerId: string): Pr
   const jlog = log.child({ job_id: job.id, order_id: job.order_id, attempt: job.attempts });
   jlog.info('job.claimed', { stage: job.stage });
 
-  // Heartbeat keeps the lease alive while long stages run.
   const heartbeat = setInterval(() => {
     db.extendLease(job.id, workerId, lease).then((ok) => {
       if (!ok) jlog.warn('job.lease_lost');
@@ -97,9 +108,22 @@ export async function runJob(deps: JobDeps, jobId: string, workerId: string): Pr
     let stage = job.stage;
     let checkpoint = job.checkpoint;
     while (stage !== 'done') {
-      jlog.info('job.stage_start', { stage });
-      checkpoint = await runStage(deps, { job, order, stage, checkpoint, workerId, log: jlog });
-      stage = nextStage(stage);
+      jlog.info('job.stage_start', { stage, product: order.product });
+      try {
+        checkpoint = await runStage(deps, { job, order, stage, checkpoint, workerId, log: jlog });
+        stage = nextStage(stage);
+      } catch (err) {
+        if (err instanceof ReportTooLong) {
+          const tighten = Number(checkpoint.tighten ?? 0) + 1;
+          if (tighten > MAX_TIGHTEN) throw new NonRetryableGenerationError(`standard report still ${err.pages} pages after ${MAX_TIGHTEN} tighten passes`);
+          jlog.warn('job.report_too_long', { pages: err.pages, tighten });
+          await db.upsertReport(order.id, { status: 'generating', content: null });
+          checkpoint = { ...checkpoint, tighten };
+          stage = 'compose';
+        } else {
+          throw err;
+        }
+      }
       await db.checkpointJob(job.id, workerId, stage, checkpoint);
       jlog.info('job.stage_done', { stage });
     }
@@ -142,50 +166,90 @@ interface StageCtx {
   log: Logger;
 }
 
+async function briefFor(deps: JobDeps, order: Order, ref: string) {
+  const sub = await deps.db.getSubmission(order.submission_id);
+  if (!sub) throw new NonRetryableGenerationError('submission missing');
+  const answers = sub.answers as Answers;
+  const version = (sub as { answers_version?: number }).answers_version ?? (answers.ideaDescription !== undefined ? 2 : 1);
+  return { sub, brief: buildBrief({ orderRef: ref, market: sub.market, currency: sub.currency, ideaName: sub.idea_name, answers, answersVersion: version }) };
+}
+
 async function runStage(deps: JobDeps, ctx: StageCtx): Promise<Json> {
   const { db } = deps;
   const { order, stage, checkpoint } = ctx;
   const ref = shortRef(order.id);
+  const tier = order.product === 'upgrade' ? 'detailed' : 'standard';
+  const deliveryKind = tier === 'detailed' ? 'detailed_report' : 'report';
 
   switch (stage) {
     case 'confirm': {
       if (await db.hasDelivery(order.id, 'confirmation')) return checkpoint;
       const sub = await db.getSubmission(order.submission_id);
-      const link = await mintAccessToken(db, { orderId: order.id, issuedVia: 'email', ttlDays: deps.tokenTtlDays, now: deps.now(), appUrl: deps.appUrl, notAfter: order.report_expires_at });
-      const mail = confirmationEmail({ statusUrl: link.statusUrl, orderRef: ref, ideaName: sub?.idea_name ?? 'your idea' });
+      // Email-delivered links are the customer's ongoing access: no expiry.
+      const link = await mintAccessToken(db, { orderId: order.id, issuedVia: 'email', ttlDays: 0, now: deps.now(), appUrl: deps.appUrl, notAfter: order.report_expires_at });
+      const mail = confirmationEmail({ statusUrl: link.statusUrl, orderRef: ref, ideaName: sub?.idea_name ?? 'your idea', product: order.product });
       await sendTracked(deps, ctx, 'confirmation', { to: order.email, ...mail });
       return checkpoint;
     }
     case 'research': {
       if (checkpoint.research_done === true) return checkpoint;
-      const sub = await db.getSubmission(order.submission_id);
-      if (!sub) throw new NonRetryableGenerationError('submission missing');
-      const brief = buildBrief({ orderRef: ref, market: sub.market, currency: sub.currency, ideaName: sub.idea_name, answers: sub.answers as Answers });
-      await db.upsertReport(order.id, { status: 'generating' });
-      const out = await deps.generator.research(brief);
-      await db.replaceResearchSources(order.id, out.sources);
-      return { ...checkpoint, research_done: true, research_notes: out.notes.slice(0, 20000), research_usage: out.usage };
+      const { brief } = await briefFor(deps, order, ref);
+      await db.upsertReport(order.id, { status: 'generating', tier });
+      // Upgrade: start from the standard order's sources, then add a deeper pass.
+      const seed = order.product === 'upgrade' && order.parent_order_id ? await db.getResearchSources(order.parent_order_id) : [];
+      const out = await deps.generator.research(brief, tier);
+      const seen = new Set<string>();
+      const merged = [...out.sources, ...seed].filter((s) => (seen.has(s.url) ? false : (seen.add(s.url), true)));
+      await db.replaceResearchSources(order.id, merged);
+      return { ...checkpoint, research_done: true, research_notes: out.notes.slice(0, 20000), research_retrieved_at: out.retrievedAt, research_usage: out.usage };
     }
     case 'compose': {
       const existing = await db.getReport(order.id);
       if (existing?.content && existing.status !== 'generating') return checkpoint;
-      const sub = await db.getSubmission(order.submission_id);
-      if (!sub) throw new NonRetryableGenerationError('submission missing');
-      const brief = buildBrief({ orderRef: ref, market: sub.market, currency: sub.currency, ideaName: sub.idea_name, answers: sub.answers as Answers });
+      const { brief } = await briefFor(deps, order, ref);
       const sources = await db.getResearchSources(order.id);
-      const out = await deps.generator.compose(brief, sources, String(checkpoint.research_notes ?? ''));
+      const notes = String(checkpoint.research_notes ?? '');
+      const researchUsage = (checkpoint.research_usage as { input_tokens?: number; output_tokens?: number } | undefined) ?? {};
+      let content: Json;
+      let verdict: string | null = null;
+      let model: string;
+      let usage: { input_tokens: number; output_tokens: number };
+      let claims: { section_id: string; text: string; kind: 'evidence' | 'assumption' | 'customer_input' | 'calculation'; confidence: 'high' | 'medium' | 'low'; source_indexes: number[] }[];
+      if (tier === 'detailed') {
+        let standard: StandardReport | null = null;
+        if (order.parent_order_id) {
+          const parent = await db.getReport(order.parent_order_id);
+          const parsed = parent?.content ? StandardReportSchema.safeParse(parent.content) : null;
+          standard = parsed?.success ? parsed.data : null;
+        }
+        const out = await deps.generator.composeDetailed(brief, sources, notes, standard);
+        content = out.report as unknown as Json;
+        model = out.model;
+        usage = out.usage;
+        claims = out.report.claims;
+      } else {
+        const out = await deps.generator.composeStandard(brief, sources, notes, { tighten: Number(checkpoint.tighten ?? 0) });
+        content = out.report as unknown as Json;
+        verdict = out.report.verdict.label;
+        model = out.model;
+        usage = out.usage;
+        claims = out.report.claims;
+      }
       const report = await db.upsertReport(order.id, {
         status: 'generated',
-        content: out.report as unknown as Json,
-        verdict: out.report.verdict.label,
-        model: out.model,
-        input_tokens: out.usage.input_tokens + Number((checkpoint.research_usage as { input_tokens?: number } | undefined)?.input_tokens ?? 0),
-        output_tokens: out.usage.output_tokens + Number((checkpoint.research_usage as { output_tokens?: number } | undefined)?.output_tokens ?? 0),
+        tier,
+        schema_version: 2,
+        content,
+        verdict,
+        model,
+        input_tokens: usage.input_tokens + Number(researchUsage.input_tokens ?? 0),
+        output_tokens: usage.output_tokens + Number(researchUsage.output_tokens ?? 0),
         generated_at: deps.now().toISOString(),
       });
+      const srcByIndex = (i: number) => sources[i - 1]?.url;
       await db.replaceReportClaims(
         report.id,
-        out.report.claims.map((c, i) => ({ section_id: c.section_id, position: i, claim_text: c.text, kind: c.kind, confidence: c.confidence, source_urls: c.source_urls })),
+        claims.map((c, i) => ({ section_id: c.section_id, position: i, claim_text: c.text, kind: c.kind, confidence: c.confidence, source_urls: c.source_indexes.map(srcByIndex).filter((u): u is string => !!u) })),
       );
       return checkpoint;
     }
@@ -194,34 +258,38 @@ async function runStage(deps: JobDeps, ctx: StageCtx): Promise<Json> {
       if (!report?.content) throw new Error('report content missing before render');
       if (report.pdf_object_path) return checkpoint;
       const sub = await db.getSubmission(order.submission_id);
-      const content = ReportContentSchema.parse(report.content) as ReportContent;
-      const render = deps.renderPdf ?? renderReportPdf;
-      const pdf = await render(content, {
+      const meta: PdfMeta = {
         orderRef: ref,
         marketLabel: MARKETS.find((m) => m.code === sub?.market)?.label ?? sub?.market ?? '',
         generatedAt: deps.now(),
         generatorName: deps.generator.name,
-      });
-      const path = `orders/${order.id}/report-v${report.version}.pdf`;
+        reportUrl: typeof checkpoint.report_url === 'string' ? checkpoint.report_url : undefined,
+      };
+      let pdf: Buffer;
+      let pageCount: number;
+      if (tier === 'detailed') {
+        const content = DetailedReportSchema.parse(report.content);
+        ({ pdf, pageCount } = await (deps.renderDetailed ?? renderDetailedPdf)(content, meta));
+      } else {
+        const content = StandardReportSchema.parse(report.content);
+        ({ pdf, pageCount } = await (deps.renderStandard ?? renderStandardPdf)(content, meta));
+        if (pageCount !== 2) throw new ReportTooLong(pageCount);
+      }
+      const version = report.version + Number(checkpoint.tighten ?? 0);
+      const path = `orders/${order.id}/${tier}-v${version}.pdf`;
       await deps.blobs.putPdf(path, pdf);
-      await db.upsertReport(order.id, { status: 'rendered', pdf_object_path: path, pdf_bytes: pdf.length, rendered_at: deps.now().toISOString() });
+      await db.upsertReport(order.id, { status: 'rendered', pdf_object_path: path, pdf_bytes: pdf.length, page_count: pageCount, rendered_at: deps.now().toISOString() });
       return { ...checkpoint, pdf_path: path };
     }
     case 'deliver': {
-      if (await db.hasDelivery(order.id, 'report')) return checkpoint;
+      if (await db.hasDelivery(order.id, deliveryKind)) return checkpoint;
       const report = await db.getReport(order.id);
       if (!report?.pdf_object_path) throw new Error('pdf missing before deliver');
       const sub = await db.getSubmission(order.submission_id);
-      const link = await mintAccessToken(db, { orderId: order.id, issuedVia: 'email', ttlDays: deps.tokenTtlDays, now: deps.now(), appUrl: deps.appUrl, notAfter: order.report_expires_at });
+      const link = await mintAccessToken(db, { orderId: order.id, issuedVia: 'email', ttlDays: 0, now: deps.now(), appUrl: deps.appUrl, notAfter: order.report_expires_at });
       const pdfBytes = await deps.blobs.getPdf(report.pdf_object_path);
-      const mail = reportReadyEmail({
-        statusUrl: link.statusUrl,
-        orderRef: ref,
-        ideaName: sub?.idea_name ?? 'your idea',
-        verdict: report.verdict ?? 'See report',
-        expiresOn: (order.report_expires_at ?? link.record.expires_at).slice(0, 10),
-      });
-      await sendTracked(deps, ctx, 'report', { to: order.email, ...mail, attachments: [{ filename: `inovantage-feasibility-report-${ref}.pdf`, content: pdfBytes }] });
+      const mail = reportReadyEmail({ statusUrl: link.statusUrl, orderRef: ref, ideaName: sub?.idea_name ?? 'your idea', verdict: report.verdict ?? 'See report', tier });
+      await sendTracked(deps, ctx, deliveryKind, { to: order.email, ...mail, attachments: [{ filename: `inovantage-${tier}-report-${ref}.pdf`, content: pdfBytes }] });
       await db.upsertReport(order.id, { status: 'delivered', delivered_at: deps.now().toISOString() });
       return checkpoint;
     }
@@ -230,7 +298,7 @@ async function runStage(deps: JobDeps, ctx: StageCtx): Promise<Json> {
   }
 }
 
-async function sendTracked(deps: JobDeps, ctx: StageCtx, kind: 'confirmation' | 'report', message: Parameters<Mailer['send']>[0]) {
+async function sendTracked(deps: JobDeps, ctx: StageCtx, kind: 'confirmation' | 'report' | 'detailed_report', message: Parameters<Mailer['send']>[0]) {
   // Server-side guarantee: a pilot order can only ever reach the allowlist.
   assertPilotDeliveryAllowed(ctx.order, message.to, deps.pilotAllowedEmails);
   try {

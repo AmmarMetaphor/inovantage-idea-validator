@@ -38,7 +38,7 @@ describe('Report access: unpaid, unknown, expired and cross-customer', () => {
     const h = makeHarness();
     const { order } = await createPendingOrder(h);
     const token = 'B'.repeat(43);
-    await h.db.createAccessToken({ order_id: order.id, token_hash: hashToken(token), issued_via: 'email', expires_at: '2030-01-01T00:00:00Z' });
+    await h.db.createAccessToken({ order_id: order.id, token_hash: hashToken(token), issued_via: 'email', expires_at: null });
     const res = await reportStatus(post('/api/report-status', { token }), h.deps);
     expect(res.status).toBe(404);
     const dl = await reportDownload(post('/api/report-download', { token }), h.deps);
@@ -49,7 +49,7 @@ describe('Report access: unpaid, unknown, expired and cross-customer', () => {
     const h = makeHarness();
     const { sessionId, order } = await createPendingOrder(h);
     const res = await checkoutResult(get(`/api/checkout-result?session_id=${sessionId}`), h.deps);
-    expect(await res.json()).toEqual({ state: 'pending' });
+    expect(await res.json()).toEqual({ state: 'pending', product: 'standard' });
     expect((await h.db.getOrder(order.id))!.status).toBe('pending_payment');
     expect(h.db.jobs.size).toBe(0);
   });
@@ -83,22 +83,34 @@ describe('Report access: unpaid, unknown, expired and cross-customer', () => {
     const res = await reportStatus(post('/api/report-status', { token: aliceToken }), h.deps);
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
-    expect(Object.keys(body).sort()).toEqual(['emailMasked', 'expiresAt', 'orderedAt', 'pdfAvailable', 'reportRef', 'stage']);
+    expect(Object.keys(body).sort()).toEqual(['detailed', 'emailMasked', 'expiresAt', 'ideaName', 'isPilot', 'orderedAt', 'reportRef', 'standard', 'upgrade']);
     expect(body.emailMasked).toBe('al***@example.com');
-    expect(body.stage).toBe('paid');
+    expect((body.standard as { stage: string }).stage).toBe('payment_confirmed');
+    expect(body.expiresAt).toBeNull(); // ongoing access: no preset expiry
     const text = JSON.stringify(body);
     expect(text).not.toContain('bob');
     expect(text).not.toContain(bob.order.id);
     expect(text).not.toContain(alice.order.id); // only the short ref is exposed
   });
 
-  it('an expired token is refused', async () => {
+  it('a checkout-return token expires after its TTL, but an email-delivered token does not', async () => {
     const h = makeHarness();
-    const { sessionId } = await paidOrder(h);
+    const { sessionId, order } = await paidOrder(h);
     const token = await tokenVia(h, sessionId);
-    h.clock.advance(31 * 86_400_000);
-    const res = await reportStatus(post('/api/report-status', { token }), h.deps);
-    expect(res.status).toBe(404);
+    const emailToken = 'E'.repeat(43);
+    await h.db.createAccessToken({ order_id: order.id, token_hash: hashToken(emailToken), issued_via: 'email', expires_at: null });
+    h.clock.advance(400 * 86_400_000);
+    expect((await reportStatus(post('/api/report-status', { token }), h.deps)).status).toBe(404);
+    expect((await reportStatus(post('/api/report-status', { token: emailToken }), h.deps)).status).toBe(200);
+  });
+
+  it('revocation stops every token for the order', async () => {
+    const h = makeHarness();
+    const { sessionId, order } = await paidOrder(h);
+    const token = await tokenVia(h, sessionId);
+    expect((await reportStatus(post('/api/report-status', { token }), h.deps)).status).toBe(200);
+    expect(await h.db.revokeTokensForOrder(order.id, h.clock.now.toISOString())).toBeGreaterThan(0);
+    expect((await reportStatus(post('/api/report-status', { token }), h.deps)).status).toBe(404);
   });
 
   it('report access expires with the order even if a token is fresh', async () => {
@@ -108,21 +120,26 @@ describe('Report access: unpaid, unknown, expired and cross-customer', () => {
     const o = h.db.orders.get(order.id)!;
     o.report_expires_at = new Date(h.clock.now.getTime() - 1000).toISOString();
     const res = await reportStatus(post('/api/report-status', { token }), h.deps);
-    expect(((await res.json()) as { stage: string }).stage).toBe('expired');
+    expect(((await res.json()) as { standard: { stage: string } }).standard.stage).toBe('expired');
     const dl = await reportDownload(post('/api/report-download', { token }), h.deps);
     expect(dl.status).toBe(410);
   });
 
-  it('download is refused until a PDF exists, then yields a short-lived signed URL', async () => {
+  it('download is refused until a PDF exists, then yields a fresh storage URL on every request', async () => {
     const h = makeHarness();
     const { sessionId, order } = await paidOrder(h);
     const token = await tokenVia(h, sessionId);
     expect((await reportDownload(post('/api/report-download', { token }), h.deps)).status).toBe(409);
-    await h.blobs.putPdf(`orders/${order.id}/report-v1.pdf`, Buffer.from('%PDF'));
-    await h.db.upsertReport(order.id, { status: 'rendered', pdf_object_path: `orders/${order.id}/report-v1.pdf` });
-    const res = await reportDownload(post('/api/report-download', { token }), h.deps);
-    expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ expiresInSeconds: 120 });
+    await h.blobs.putPdf(`orders/${order.id}/standard-v1.pdf`, Buffer.from('%PDF'));
+    await h.db.upsertReport(order.id, { status: 'rendered', pdf_object_path: `orders/${order.id}/standard-v1.pdf` });
+    const first = await reportDownload(post('/api/report-download', { token }), h.deps);
+    expect(first.status).toBe(200);
+    const body = (await first.json()) as Record<string, unknown>;
+    expect(body).not.toHaveProperty('expiresInSeconds'); // no customer-facing deadline
+    // Days later, after any storage URL would have expired, the same stable link still works.
+    h.clock.advance(10 * 86_400_000);
+    const again = await reportDownload(post('/api/report-download', { token }), h.deps);
+    expect(again.status).toBe(200);
   });
 
   it('the return-page token window closes two hours after payment', async () => {
@@ -158,6 +175,8 @@ describe('Link recovery', () => {
     const token = /\/report\/([A-Za-z0-9_-]{43})/.exec(h.mailer.sent[0].text)![1];
     const status = (await (await reportStatus(post('/api/report-status', { token }), h.deps)).json()) as { emailMasked: string };
     expect(status.emailMasked).toBe('al***@example.com');
+    // Recovery tokens no longer carry a preset order expiry.
+    expect(h.mailer.sent[0].text).not.toMatch(/until \d{4}/);
   });
 
   it('does not email for unpaid orders', async () => {

@@ -30,6 +30,12 @@ export function validateField(field: Field, answers: Answers): string | null {
       if (s && !field.options.some((o) => o.value === s)) return 'Choose a valid option.';
       return null;
     }
+    case 'combobox': {
+      const s = asString(value).trim();
+      if (field.required && s.length === 0) return 'Choose or type an industry.';
+      if (s.length > (field.maxLength ?? 80)) return `Please keep this under ${field.maxLength ?? 80} characters.`;
+      return null;
+    }
     case 'checkbox-group': {
       const arr = asArray(value);
       const min = field.min ?? 1;
@@ -50,7 +56,7 @@ export function validateField(field: Field, answers: Answers): string | null {
         if (field.required) {
           return field.allowUnknown === false
             ? 'Enter a number.'
-            : 'Enter a number, or tick “I don’t know yet”.';
+            : `Enter a number, or tick “${field.unknownLabel ?? 'I don’t know yet'}”.`;
         }
         return null;
       }

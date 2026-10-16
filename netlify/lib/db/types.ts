@@ -26,6 +26,8 @@ export type OrderStatus = 'pending_payment' | 'paid' | 'fulfilled' | 'failed' | 
 
 export type OrderSource = 'stripe' | 'pilot';
 export type AuthorisedBy = 'stripe_webhook' | 'checkout_return' | 'owner_pilot';
+export type ProductId = 'standard' | 'upgrade';
+export type ReportTier = 'standard' | 'detailed';
 
 export interface Order {
   id: string;
@@ -33,6 +35,9 @@ export interface Order {
   submission_id: string;
   source: OrderSource;
   authorised_by: AuthorisedBy | null;
+  product: ProductId;
+  /** For an upgrade: the standard order it extends. */
+  parent_order_id: string | null;
   email: string;
   email_normalised: string;
   status: OrderStatus;
@@ -76,6 +81,11 @@ export interface ResearchSource {
   publisher: string | null;
   page_age: string | null;
   snippet: string | null;
+  published_date?: string | null;
+  geography?: string | null;
+  unit?: string | null;
+  period?: string | null;
+  claim_type?: 'historical' | 'forecast' | 'other' | null;
 }
 
 export interface ReportClaim {
@@ -93,6 +103,9 @@ export interface Report {
   id: string;
   order_id: string;
   version: number;
+  tier: ReportTier;
+  schema_version: number;
+  page_count: number | null;
   status: ReportStatus;
   content: Json | null;
   verdict: string | null;
@@ -112,7 +125,8 @@ export interface AccessToken {
   token_hash: string;
   purpose: 'report_access';
   issued_via: 'checkout_return' | 'email' | 'recovery' | 'pilot';
-  expires_at: string;
+  /** null = does not expire (email-delivered links). */
+  expires_at: string | null;
   revoked_at: string | null;
   use_count: number;
 }
@@ -132,7 +146,7 @@ export interface WebhookEvent {
   error: string | null;
 }
 
-export type DeliveryKind = 'confirmation' | 'report' | 'recovery' | 'owner_alert';
+export type DeliveryKind = 'confirmation' | 'report' | 'detailed_report' | 'recovery' | 'owner_alert';
 
 export interface DeliveryAttempt {
   id: string;
@@ -154,14 +168,15 @@ export interface Db {
   setSubmissionStatus(id: string, status: Submission['status']): Promise<void>;
 
   // orders
-  /** Unique per submission: a repeat returns the existing order with created=false. */
-  createOrder(input: { submission_id: string; email: string; email_normalised: string; amount_minor: number; currency: string; stripe_price_id: string | null; source: OrderSource }): Promise<{ order: Order; created: boolean }>;
+  /** Unique per (submission, product): a repeat returns the existing order with created=false. */
+  createOrder(input: { submission_id: string; email: string; email_normalised: string; amount_minor: number; currency: string; stripe_price_id: string | null; source: OrderSource; product: ProductId; parent_order_id: string | null }): Promise<{ order: Order; created: boolean }>;
   getOrder(id: string): Promise<Order | null>;
-  getOrderBySubmission(submissionId: string): Promise<Order | null>;
+  /** All orders for a submission (standard and upgrade). */
+  getOrdersBySubmission(submissionId: string): Promise<Order[]>;
   getOrderByCheckoutSession(sessionId: string): Promise<Order | null>;
   attachCheckoutSession(orderId: string, sessionId: string, expiresAt: string): Promise<void>;
   /** Idempotent. Returns applied=false when the order was already paid/authorised. Throws on payment-intent conflict. */
-  markOrderPaid(input: { orderId: string; paymentIntentId: string | null; authorisedBy: AuthorisedBy; paidAt: string; reportExpiresAt: string }): Promise<{ applied: boolean; order: Order }>;
+  markOrderPaid(input: { orderId: string; paymentIntentId: string | null; authorisedBy: AuthorisedBy; paidAt: string; reportExpiresAt: string | null }): Promise<{ applied: boolean; order: Order }>;
   setOrderStatus(orderId: string, status: OrderStatus, extra?: { failed_reason?: string; fulfilled_at?: string }): Promise<void>;
   /** Paid/fulfilled, unexpired orders for an email (newest first). */
   findActiveOrdersByEmail(emailNormalised: string, now: string, limit: number): Promise<Order[]>;
@@ -191,9 +206,11 @@ export interface Db {
   replaceReportClaims(reportId: string, claims: ReportClaim[]): Promise<void>;
 
   // access tokens
-  createAccessToken(input: { order_id: string; token_hash: string; issued_via: AccessToken['issued_via']; expires_at: string }): Promise<AccessToken>;
+  createAccessToken(input: { order_id: string; token_hash: string; issued_via: AccessToken['issued_via']; expires_at: string | null }): Promise<AccessToken>;
   findAccessToken(tokenHash: string): Promise<AccessToken | null>;
   touchAccessToken(id: string, now: string): Promise<void>;
+  /** Security revocation: every token for the order stops working. */
+  revokeTokensForOrder(orderId: string, now: string): Promise<number>;
 
   // deliveries
   recordDelivery(input: Omit<DeliveryAttempt, 'id' | 'created_at'>): Promise<void>;

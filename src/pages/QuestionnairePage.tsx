@@ -7,7 +7,7 @@ import { Stepper } from '@/components/Stepper';
 import { usePageTitle } from '@/components/usePageTitle';
 import { MARKETS } from '@/config/product';
 import { asString } from '@/questionnaire/helpers';
-import { STEPS, visibleFields } from '@/questionnaire/schema';
+import { groupByQuestion, QUESTION_COUNT, STEPS, visibleFields } from '@/questionnaire/schema';
 import { useQuestionnaire } from '@/questionnaire/store';
 import type { AnswerValue, StepErrors } from '@/questionnaire/types';
 import { isStepComplete, validateStep } from '@/questionnaire/validate';
@@ -35,13 +35,13 @@ export function QuestionnairePage() {
     headingRef.current?.focus();
   }, [stepIndex]);
 
-  // Default currency from the chosen market the first time pricing is reached.
+  // Currency follows the chosen market (set on country change; backfilled here for restored drafts).
   useEffect(() => {
-    if (step?.id === 'pricing' && !asString(answers.currency)) {
+    if (asString(answers.country) && !asString(answers.currency)) {
       const market = MARKETS.find((m) => m.code === asString(answers.country));
       if (market) setAnswers({ currency: market.currency });
     }
-  }, [step?.id, answers.currency, answers.country, setAnswers]);
+  }, [answers.currency, answers.country, setAnswers]);
 
   if (!step) return <Navigate to="/validate/1" replace />;
 
@@ -136,17 +136,37 @@ export function QuestionnairePage() {
           </div>
         )}
 
-        {fields.map((field) => (
-          <div key={field.id} className={`field-wrap ${field.type === 'checkbox' ? 'field-wrap--checkbox' : ''}`}>
-            {field.sectionHeading && (
-              <div className="form-section">
-                <h2 className="form-section__title">{field.sectionHeading}</h2>
-                {field.sectionIntro && <p className="form-section__intro">{field.sectionIntro}</p>}
-              </div>
-            )}
-            <FieldRenderer field={field} answers={answers} error={errors[field.id]} onChange={handleChange} />
-          </div>
-        ))}
+        {groupByQuestion(fields).map((group, gi) => {
+          const multi = group.fields.length > 1;
+          const inner = group.fields.map((field) => (
+            <div key={field.id} className={`field-wrap ${field.type === 'checkbox' ? 'field-wrap--checkbox' : ''}`}>
+              <FieldRenderer field={field} answers={answers} error={errors[field.id]} onChange={handleChange} />
+            </div>
+          ));
+          if (group.number === null) return <div key={gi}>{inner}</div>;
+          const legend = (
+            <>
+              <span className="question__num" aria-hidden="true">{group.number}</span>
+              <span>
+                <span className="visually-hidden">Question {group.number} of {QUESTION_COUNT}. </span>
+                {group.title}
+              </span>
+            </>
+          );
+          return multi ? (
+            <fieldset key={gi} className="question question--multi">
+              <legend className="question__legend">{legend}</legend>
+              {group.help && <p className="question__help">{group.help}</p>}
+              <div className="question__fields">{inner}</div>
+            </fieldset>
+          ) : (
+            <div key={gi} className="question">
+              <p className="question__legend" aria-hidden="true">{legend}</p>
+              {group.help && <p className="question__help">{group.help}</p>}
+              <div className="question__fields">{inner}</div>
+            </div>
+          );
+        })}
 
         <div className="form-actions">
           <Button variant="secondary" onClick={handleBack}>
@@ -155,8 +175,8 @@ export function QuestionnairePage() {
           <Button type="submit">{isLast ? 'Review my answers' : 'Continue'}</Button>
         </div>
         <p className="form-actions__note" style={{ marginTop: 'var(--space-4)' }}>
-          Your answers are kept in this browser tab only until you submit. Nothing is saved to your
-          device.
+          Your draft is kept in this browser tab until you submit or close the tab. Nothing is saved to
+          your device beyond that.
         </p>
       </form>
     </div>

@@ -7,7 +7,7 @@ import { makeHarness, post, validAnswers } from './helpers';
 describe('Submission and checkout creation', () => {
   it('rejects oversized bodies', async () => {
     const h = makeHarness();
-    const res = await createSubmission(post('/api/create-submission', { answers: { ideaSummary: 'x'.repeat(70_000) } }), h.deps);
+    const res = await createSubmission(post('/api/create-submission', { answers: { ideaDescription: 'x'.repeat(70_000) } }), h.deps);
     expect(res.status).toBe(413);
   });
 
@@ -23,12 +23,12 @@ describe('Submission and checkout creation', () => {
 
   it('drops unknown keys and oversized values', async () => {
     const h = makeHarness();
-    const answers = { ...validAnswers(), __proto__hack: 'x', amount: 1, ideaSummary: 'y'.repeat(5000) };
+    const answers = { ...validAnswers(), __proto__hack: 'x', amount: 1, ideaDescription: 'y'.repeat(5000) };
     const res = await createSubmission(post('/api/create-submission', { answers }), h.deps);
     expect(res.status).toBe(201);
     const sub = [...h.db.submissions.values()][0];
     expect('amount' in sub.answers).toBe(false);
-    expect((sub.answers.ideaSummary as string).length).toBe(800);
+    expect((sub.answers.ideaDescription as string).length).toBe(1200);
   });
 
   it('a honeypot value fails closed', async () => {
@@ -45,9 +45,10 @@ describe('Submission and checkout creation', () => {
     const res = await createCheckout(post('/api/create-checkout', { submissionId, amount: 1, priceId: 'price_cheap', currency: 'usd' }), h.deps);
     expect(res.status).toBe(200);
     const order = [...h.db.orders.values()][0];
-    expect(order.amount_minor).toBe(2400);
+    expect(order.amount_minor).toBe(1700);
     expect(order.currency).toBe('GBP');
-    expect(h.gateway.created[0].priceId).toBe('price_test_expected');
+    expect(order.product).toBe('standard');
+    expect(h.gateway.created[0].priceId).toBe('price_test_standard');
     expect(h.gateway.created[0].successUrl).toContain('{CHECKOUT_SESSION_ID}');
   });
 
@@ -82,7 +83,7 @@ describe('Configuration and logging safety', () => {
       loadEnv(['stripe', 'db'], { IP_HASH_SALT: 's', STRIPE_SECRET_KEY: 'sk_test_abc' });
     } catch (err) {
       const e = err as ConfigError;
-      expect(e.missing).toEqual(['STRIPE_WEBHOOK_SECRET', 'STRIPE_PRICE_ID', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY']);
+      expect(e.missing).toEqual(['STRIPE_WEBHOOK_SECRET', 'STRIPE_PRICE_ID_STANDARD', 'STRIPE_PRICE_ID_UPGRADE', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY']);
       expect(e.message).not.toContain('sk_test_abc');
     }
   });

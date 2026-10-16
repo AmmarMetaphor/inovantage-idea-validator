@@ -14,9 +14,10 @@ export const DEMO_MODE: boolean = import.meta.env.VITE_DEMO_MODE !== 'false';
 
 /**
  * Draft persistence for questionnaire answers.
- * "none" (default): answers live in memory only and vanish on refresh.
- * "session": answers are kept in sessionStorage for this tab only.
+ * "session" (default): answers are kept in sessionStorage for this tab only,
+ * so a refresh does not lose progress; closing the tab clears them.
+ * "none": answers live in memory only.
  * localStorage is deliberately not an option.
  */
 export const DRAFT_STORAGE: 'none' | 'session' =
-  import.meta.env.VITE_DRAFT_STORAGE === 'session' ? 'session' : 'none';
+  import.meta.env.VITE_DRAFT_STORAGE === 'none' ? 'none' : 'session';

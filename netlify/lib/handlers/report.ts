@@ -1,79 +1,224 @@
+import { PRODUCTS } from '../../../src/config/product';
 import { hashIp, isValidTokenShape, maskEmail, sha256Hex, shortRef } from '../crypto';
 import type { Deps } from '../deps';
-import type { Job, Order, Report } from '../db/types';
+import type { Job, Order, Report, Submission } from '../db/types';
 import { recoveryEmail } from '../emails';
 import { fulfilCheckoutSession } from '../fulfil';
-import { assertPilotDeliveryAllowed } from '../jobs';
 import { clientIp, HttpError, isObject, json, readJson, requireMethod } from '../http';
+import { assertPilotDeliveryAllowed } from '../jobs';
+import { computeFinancials } from '../finance';
+import { StandardReportSchema, DetailedReportSchema } from '../report-schema';
 import { checkAccessToken, mintAccessToken } from '../tokens';
+import { hasOwnerSession } from './owner';
 import { enforceRateLimit } from './ratelimit';
 
-export type PublicStage = 'paid' | 'researching' | 'compiling' | 'ready' | 'failed' | 'expired';
+/* ---------------------------------------------------------------------------
+   Public progress states, derived from actual backend records
+--------------------------------------------------------------------------- */
 
-export function publicStage(order: Order, job: Job | null, report: Report | null, now: Date): PublicStage {
+export type PublicStage =
+  | 'confirming_payment'
+  | 'payment_confirmed'
+  | 'researching'
+  | 'writing'
+  | 'ready'
+  | 'email_sent'
+  | 'failed'
+  | 'expired';
+
+export const STAGE_LABELS: Record<PublicStage, string> = {
+  confirming_payment: 'Confirming your payment',
+  payment_confirmed: 'Payment confirmed',
+  researching: 'Researching',
+  writing: 'Writing your report',
+  ready: 'Report ready',
+  email_sent: 'Email sent',
+  failed: 'Needs attention',
+  expired: 'Access ended',
+};
+
+export function publicStage(order: Order, job: Job | null, report: Report | null, emailSent: boolean, now: Date): PublicStage {
   if (order.report_expires_at && new Date(order.report_expires_at) <= now) return 'expired';
-  if (order.status === 'fulfilled' || report?.status === 'delivered') return 'ready';
+  if (order.status === 'pending_payment') return 'confirming_payment';
   if (order.status === 'failed' || job?.status === 'dead') return 'failed';
+  const pdfReady = !!report?.pdf_object_path && (report.status === 'rendered' || report.status === 'delivered');
+  if (pdfReady && emailSent) return 'email_sent';
+  if (pdfReady) return 'ready';
   switch (job?.stage) {
     case 'research':
       return 'researching';
     case 'compose':
     case 'render':
+      return 'writing';
     case 'deliver':
-      return 'compiling';
     case 'done':
       return 'ready';
     default:
-      return 'paid';
+      return 'payment_confirmed';
   }
+}
+
+/* ---------------------------------------------------------------------------
+   Token → entitlements (standard + optional detailed) for one submission
+--------------------------------------------------------------------------- */
+
+interface Entitlements {
+  submission: Submission;
+  standard: Order;
+  upgrade: Order | null;
 }
 
 async function authorise(req: Request, deps: Deps, contextIp: string | undefined, route: string, limit: number) {
   requireMethod(req, 'POST');
   const ip = hashIp(clientIp(req, contextIp), deps.env.ipHashSalt);
   await enforceRateLimit(deps, `${route}:${ip}`, limit, 600);
-  const body = await readJson<unknown>(req, 2048);
+  const body = await readJson<Record<string, unknown>>(req, 2048);
   if (!isObject(body) || !isValidTokenShape(body.token)) throw new HttpError(404, 'not_found', 'No report matches that link.');
   const check = await checkAccessToken(deps.db, body.token, deps.now());
   // One generic answer for unknown, expired and revoked tokens.
-  if (!check.ok) throw new HttpError(404, 'not_found', 'No report matches that link. It may have expired; use "Find my report" to get a new one.');
-  const order = await deps.db.getOrder(check.token.order_id);
-  if (!order || (order.status !== 'paid' && order.status !== 'fulfilled' && order.status !== 'failed')) {
-    throw new HttpError(404, 'not_found', 'No report matches that link.');
-  }
+  if (!check.ok) throw new HttpError(404, 'not_found', 'No report matches that link. It may have been revoked or expired; use "Find my report" to get a new one.');
+  const tokenOrder = await deps.db.getOrder(check.token.order_id);
+  if (!tokenOrder) throw new HttpError(404, 'not_found', 'No report matches that link.');
+  const orders = await deps.db.getOrdersBySubmission(tokenOrder.submission_id);
+  const standard = orders.find((o) => o.product === 'standard') ?? null;
+  const upgrade = orders.find((o) => o.product === 'upgrade') ?? null;
+  const live = (o: Order | null) => !!o && (o.status === 'paid' || o.status === 'fulfilled' || o.status === 'failed');
+  if (!standard || !live(standard)) throw new HttpError(404, 'not_found', 'No report matches that link.');
+  const submission = await deps.db.getSubmission(tokenOrder.submission_id);
+  if (!submission) throw new HttpError(404, 'not_found', 'No report matches that link.');
   await deps.db.touchAccessToken(check.token.id, deps.now().toISOString());
-  return { order, tokenId: check.token.id };
+  const ent: Entitlements = { submission, standard, upgrade: upgrade && (live(upgrade) || upgrade.status === 'pending_payment') ? upgrade : null };
+  return { ent, body, token: body.token };
 }
 
-/** POST /api/report-status { token } → minimal status */
-export async function reportStatus(req: Request, deps: Deps, contextIp?: string): Promise<Response> {
-  const { order } = await authorise(req, deps, contextIp, 'status', 120);
-  const [job, report] = await Promise.all([deps.db.getJobForOrder(order.id, 'report'), deps.db.getReport(order.id)]);
-  const stage = publicStage(order, job, report, deps.now());
-  return json({
-    reportRef: shortRef(order.id),
+async function tierStatus(deps: Deps, order: Order, kind: 'report' | 'detailed_report') {
+  const [job, report, emailSent] = await Promise.all([deps.db.getJobForOrder(order.id, 'report'), deps.db.getReport(order.id), deps.db.hasDelivery(order.id, kind)]);
+  const stage = publicStage(order, job, report, emailSent, deps.now());
+  return {
     stage,
-    orderedAt: order.created_at,
-    expiresAt: order.report_expires_at,
-    emailMasked: maskEmail(order.email),
-    pdfAvailable: stage === 'ready' && !!report?.pdf_object_path,
+    label: STAGE_LABELS[stage],
+    pdfAvailable: !!report?.pdf_object_path && (report.status === 'rendered' || report.status === 'delivered'),
+    emailSent,
+    verdict: kind === 'report' ? (report?.verdict ?? null) : null,
+  };
+}
+
+/** POST /api/report-status { token } → minimal status for both tiers */
+export async function reportStatus(req: Request, deps: Deps, contextIp?: string): Promise<Response> {
+  const { ent } = await authorise(req, deps, contextIp, 'status', 120);
+  const standard = await tierStatus(deps, ent.standard, 'report');
+  const detailed = ent.upgrade ? await tierStatus(deps, ent.upgrade, 'detailed_report') : null;
+  return json({
+    reportRef: shortRef(ent.standard.id),
+    ideaName: ent.submission.idea_name,
+    orderedAt: ent.standard.created_at,
+    expiresAt: ent.standard.report_expires_at,
+    emailMasked: maskEmail(ent.standard.email),
+    isPilot: ent.standard.source === 'pilot',
+    standard,
+    detailed: detailed ? { ...detailed, purchased: ent.upgrade!.status !== 'pending_payment' } : null,
+    upgrade: { price: PRODUCTS.upgrade.display, priceNote: PRODUCTS.upgrade.priceNote, available: !ent.upgrade || ent.upgrade.status === 'pending_payment' },
   });
 }
 
-/** POST /api/report-download { token } → short-lived signed URL */
-export async function reportDownload(req: Request, deps: Deps, contextIp?: string): Promise<Response> {
-  const { order } = await authorise(req, deps, contextIp, 'download', 30);
-  if (order.report_expires_at && new Date(order.report_expires_at) <= deps.now()) {
-    throw new HttpError(410, 'expired', 'Access to this report has expired.');
-  }
+/**
+ * POST /api/report-content { token, tier } → structured report data.
+ * The detailed tier is returned only when its order is paid and the report
+ * exists; nothing premium is ever sent for an unpaid upgrade.
+ */
+export async function reportContent(req: Request, deps: Deps, contextIp?: string): Promise<Response> {
+  const { ent, body } = await authorise(req, deps, contextIp, 'content', 120);
+  const tier = body.tier === 'detailed' ? 'detailed' : 'standard';
+  const order = tier === 'detailed' ? ent.upgrade : ent.standard;
+  if (!order || order.status === 'pending_payment') throw new HttpError(402, 'not_purchased', 'The detailed report has not been purchased.');
   const report = await deps.db.getReport(order.id);
-  if (!report?.pdf_object_path || (report.status !== 'rendered' && report.status !== 'delivered')) {
-    throw new HttpError(409, 'not_ready', 'The report is not ready yet.');
+  if (!report?.content || report.status === 'generating') throw new HttpError(409, 'not_ready', 'The report is not ready yet.');
+  if (tier === 'detailed') {
+    const content = DetailedReportSchema.parse(report.content);
+    return json({ tier, reportRef: shortRef(ent.standard.id), generatedAt: report.generated_at, content, financials: computeFinancials(toFinancialInputs(content.financial_inputs, ent.submission.currency)) });
   }
-  const url = await deps.blobs.createSignedUrl(report.pdf_object_path, 120);
-  deps.log.info('report.download_url_issued', { order_id: order.id });
-  return json({ url, expiresInSeconds: 120 });
+  const content = StandardReportSchema.parse(report.content);
+  return json({ tier, reportRef: shortRef(ent.standard.id), generatedAt: report.generated_at, content, financials: computeFinancials(toFinancialInputs(content.financial_inputs, ent.submission.currency)) });
 }
+
+function toFinancialInputs(fi: { price: { value: number | null; unit: string; basis: 'customer_input' | 'assumption' | 'evidence'; note: string }; variable_cost: { value: number | null; unit: string; basis: 'customer_input' | 'assumption' | 'evidence'; note: string }; fixed_monthly: { value: number | null; basis: 'customer_input' | 'assumption' | 'evidence'; note: string }; volumes: { low: number; base: number; high: number; basis: 'customer_input' | 'assumption' | 'evidence'; note: string } }, currency: string) {
+  return {
+    currency,
+    price: { value: fi.price.value, unit: fi.price.unit || 'sale', basis: fi.price.basis, note: fi.price.note },
+    variableCost: { value: fi.variable_cost.value, unit: fi.variable_cost.unit || 'sale', basis: fi.variable_cost.basis, note: fi.variable_cost.note },
+    fixedMonthly: { value: fi.fixed_monthly.value, unit: 'per month' as const, basis: fi.fixed_monthly.basis, note: fi.fixed_monthly.note },
+    volumes: { ...fi.volumes },
+  };
+}
+
+/** POST /api/report-download { token, tier } → fresh short-lived storage URL (repeatable, no customer deadline) */
+export async function reportDownload(req: Request, deps: Deps, contextIp?: string): Promise<Response> {
+  const { ent, body } = await authorise(req, deps, contextIp, 'download', 60);
+  const tier = body.tier === 'detailed' ? 'detailed' : 'standard';
+  const order = tier === 'detailed' ? ent.upgrade : ent.standard;
+  if (!order || order.status === 'pending_payment') throw new HttpError(402, 'not_purchased', 'The detailed report has not been purchased.');
+  if (order.report_expires_at && new Date(order.report_expires_at) <= deps.now()) throw new HttpError(410, 'expired', 'Access to this report has ended.');
+  const report = await deps.db.getReport(order.id);
+  if (!report?.pdf_object_path || (report.status !== 'rendered' && report.status !== 'delivered')) throw new HttpError(409, 'not_ready', 'The report is not ready yet.');
+  // The storage URL is short-lived by design; the customer's stable link is the report page, which mints a new one on every click.
+  const url = await deps.blobs.createSignedUrl(report.pdf_object_path, 120);
+  deps.log.info('report.download_url_issued', { order_id: order.id, tier });
+  return json({ url, tier });
+}
+
+/* ---------------------------------------------------------------------------
+   Upgrade purchase
+--------------------------------------------------------------------------- */
+
+const CHECKOUT_TTL_SECONDS = 30 * 60;
+
+/**
+ * POST /api/create-upgrade-checkout { token } → { checkoutUrl } (Stripe) or
+ * { reportPath } (pilot orders with an owner session). Idempotent per
+ * submission: the upgrade order is unique on (submission, 'upgrade').
+ */
+export async function createUpgradeCheckout(req: Request, deps: Deps, contextIp?: string): Promise<Response> {
+  const { ent } = await authorise(req, deps, contextIp, 'upgrade', 10);
+  if (ent.standard.status !== 'paid' && ent.standard.status !== 'fulfilled') throw new HttpError(409, 'standard_not_paid', 'The standard report must be paid first.');
+  if (ent.upgrade && ent.upgrade.status !== 'pending_payment' && ent.upgrade.status !== 'expired') throw new HttpError(409, 'already_purchased', 'The detailed report has already been purchased.');
+
+  const product = PRODUCTS.upgrade;
+  const now = deps.now();
+
+  if (ent.standard.source === 'pilot') {
+    if (!hasOwnerSession(req, deps)) throw new HttpError(403, 'pilot_owner_required', 'Pilot upgrades can only be started from the owner page session.');
+    const { order } = await deps.db.createOrder({ submission_id: ent.submission.id, email: ent.standard.email, email_normalised: ent.standard.email_normalised, amount_minor: 0, currency: product.currency, stripe_price_id: null, source: 'pilot', product: 'upgrade', parent_order_id: ent.standard.id });
+    await deps.db.markOrderPaid({ orderId: order.id, paymentIntentId: null, authorisedBy: 'owner_pilot', paidAt: now.toISOString(), reportExpiresAt: ent.standard.report_expires_at });
+    const { created, job } = await deps.db.createJob({ order_id: order.id, type: 'report' });
+    if (created) await deps.invokeWorker(job.id).catch((err) => deps.log.warn('upgrade.worker_invoke_failed', { job_id: job.id, err }));
+    deps.log.info('upgrade.pilot', { order_id: order.id, job_id: job.id, created });
+    const link = await mintAccessToken(deps.db, { orderId: ent.standard.id, issuedVia: 'pilot', ttlDays: deps.env.tokenTtlDays, now, appUrl: deps.env.appUrl, notAfter: ent.standard.report_expires_at });
+    return json({ reportPath: link.statusPath, pilot: true });
+  }
+
+  const payments = deps.payments; // throws a clear setup error when Stripe is not configured
+  const priceId = deps.env.stripePriceIds.upgrade;
+  await payments.verifyPrice(priceId, { amountMinor: product.amountMinor, currency: product.currency });
+  const { order } = await deps.db.createOrder({ submission_id: ent.submission.id, email: ent.standard.email, email_normalised: ent.standard.email_normalised, amount_minor: product.amountMinor, currency: product.currency, stripe_price_id: priceId, source: 'stripe', product: 'upgrade', parent_order_id: ent.standard.id });
+  if (order.status !== 'pending_payment' && order.status !== 'expired') throw new HttpError(409, 'already_purchased', 'The detailed report has already been purchased.');
+  const session = await payments.createCheckoutSession({
+    priceId,
+    orderId: order.id,
+    customerEmail: ent.standard.email,
+    successUrl: `${deps.env.appUrl}/checkout/return?session_id={CHECKOUT_SESSION_ID}`,
+    cancelUrl: `${deps.env.appUrl}/checkout?status=cancelled&upgrade=1`,
+    expiresAtUnix: Math.floor(now.getTime() / 1000) + CHECKOUT_TTL_SECONDS,
+    idempotencyKey: `checkout:${order.id}:${order.stripe_checkout_session_id ?? 'first'}`,
+  });
+  await deps.db.attachCheckoutSession(order.id, session.id, new Date(session.expiresAtUnix * 1000).toISOString());
+  if (order.status === 'expired') await deps.db.setOrderStatus(order.id, 'pending_payment');
+  deps.log.info('upgrade.checkout_created', { order_id: order.id });
+  return json({ checkoutUrl: session.url });
+}
+
+/* ---------------------------------------------------------------------------
+   Checkout return (standard and upgrade)
+--------------------------------------------------------------------------- */
 
 const SESSION_RE = /^cs_(test|live)_[A-Za-z0-9]{10,200}$/;
 const RETURN_TOKEN_WINDOW_MS = 2 * 60 * 60 * 1000;
@@ -98,7 +243,7 @@ export async function checkoutResult(req: Request, deps: Deps, contextIp?: strin
     const session = await deps.payments.retrieveSession(sessionId);
     if (session && session.paymentStatus === 'paid') {
       const result = await fulfilCheckoutSession(
-        { db: deps.db, log: deps.log, now: deps.now, expectedPriceId: deps.env.stripePriceId, reportAccessDays: deps.env.reportAccessDays, invokeWorker: deps.invokeWorker },
+        { db: deps.db, log: deps.log, now: deps.now, expectedPriceIds: deps.env.stripePriceIds, reportAccessDays: deps.env.reportAccessDays, invokeWorker: deps.invokeWorker },
         session,
         'checkout_return',
       );
@@ -113,14 +258,20 @@ export async function checkoutResult(req: Request, deps: Deps, contextIp?: strin
   if (order.status === 'paid' || order.status === 'fulfilled') {
     const paidAt = order.paid_at ? new Date(order.paid_at).getTime() : 0;
     if (deps.now().getTime() - paidAt > RETURN_TOKEN_WINDOW_MS) {
-      return json({ state: 'paid', reportPath: null, message: 'Use the link in your confirmation email.' });
+      return json({ state: 'paid', product: order.product, reportPath: null, message: 'Use the link in your confirmation email.' });
     }
-    const link = await mintAccessToken(deps.db, { orderId: order.id, issuedVia: 'checkout_return', ttlDays: deps.env.tokenTtlDays, now: deps.now(), appUrl: deps.env.appUrl, notAfter: order.report_expires_at });
-    return json({ state: 'paid', reportPath: link.statusPath, reportRef: shortRef(order.id) });
+    // The link always points at the submission's report page (standard order), whichever product was just bought.
+    const anchor = order.product === 'upgrade' && order.parent_order_id ? order.parent_order_id : order.id;
+    const link = await mintAccessToken(deps.db, { orderId: anchor, issuedVia: 'checkout_return', ttlDays: deps.env.tokenTtlDays, now: deps.now(), appUrl: deps.env.appUrl, notAfter: order.report_expires_at });
+    return json({ state: 'paid', product: order.product, reportPath: link.statusPath, reportRef: shortRef(anchor) });
   }
-  if (order.status === 'expired' || order.status === 'failed') return json({ state: order.status });
-  return json({ state: 'pending' });
+  if (order.status === 'expired' || order.status === 'failed') return json({ state: order.status, product: order.product });
+  return json({ state: 'pending', product: order.product });
 }
+
+/* ---------------------------------------------------------------------------
+   Link recovery
+--------------------------------------------------------------------------- */
 
 /** POST /api/recover-report { email } → always { ok: true } */
 export async function recoverReport(req: Request, deps: Deps, contextIp?: string): Promise<Response> {
@@ -147,14 +298,12 @@ export async function recoverReport(req: Request, deps: Deps, contextIp?: string
   }
   try {
     const links = [] as { statusUrl: string; ideaName: string; orderRef: string; orderId: string }[];
-    let soonest = '';
     for (const order of orders) {
       const sub = await deps.db.getSubmission(order.submission_id);
       const link = await mintAccessToken(deps.db, { orderId: order.id, issuedVia: 'recovery', ttlDays: deps.env.recoveryTokenTtlDays, now, appUrl: deps.env.appUrl, notAfter: order.report_expires_at });
       links.push({ statusUrl: link.statusUrl, ideaName: sub?.idea_name ?? 'your idea', orderRef: shortRef(order.id), orderId: order.id });
-      if (!soonest || link.record.expires_at < soonest) soonest = link.record.expires_at;
     }
-    const mail = recoveryEmail({ links, expiresOn: soonest.slice(0, 10) });
+    const mail = recoveryEmail({ links });
     // Only ever to the address on the original order, never to the one typed in.
     const to = orders[0].email;
     for (const o of orders) assertPilotDeliveryAllowed(o, to, deps.env.pilotAllowedEmails);

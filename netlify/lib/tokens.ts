@@ -8,15 +8,19 @@ export interface MintedToken {
   statusUrl: string;
 }
 
-/** Create a report access token. Only the hash is persisted. */
+/**
+ * Create a report access token. Only the hash is persisted.
+ * ttlDays = 0 means the token does not expire (used for email-delivered links,
+ * which are the customer's ongoing access). notAfter caps it either way.
+ */
 export async function mintAccessToken(db: Db, input: { orderId: string; issuedVia: AccessToken['issued_via']; ttlDays: number; now: Date; appUrl: string; notAfter?: string | null }): Promise<MintedToken> {
-  let expires = new Date(input.now.getTime() + input.ttlDays * 86_400_000);
+  let expires: Date | null = input.ttlDays > 0 ? new Date(input.now.getTime() + input.ttlDays * 86_400_000) : null;
   if (input.notAfter) {
     const cap = new Date(input.notAfter);
-    if (cap < expires) expires = cap;
+    if (!expires || cap < expires) expires = cap;
   }
   const token = generateToken();
-  const record = await db.createAccessToken({ order_id: input.orderId, token_hash: hashToken(token), issued_via: input.issuedVia, expires_at: expires.toISOString() });
+  const record = await db.createAccessToken({ order_id: input.orderId, token_hash: hashToken(token), issued_via: input.issuedVia, expires_at: expires ? expires.toISOString() : null });
   const statusPath = `/report/${token}`;
   return { token, record, statusPath, statusUrl: `${input.appUrl}${statusPath}` };
 }
@@ -30,6 +34,6 @@ export async function checkAccessToken(db: Db, presented: string, now: Date): Pr
   const record = await db.findAccessToken(hashToken(presented));
   if (!record) return { ok: false, reason: 'not_found' };
   if (record.revoked_at) return { ok: false, reason: 'revoked' };
-  if (new Date(record.expires_at) <= now) return { ok: false, reason: 'expired' };
+  if (record.expires_at && new Date(record.expires_at) <= now) return { ok: false, reason: 'expired' };
   return { ok: true, token: record };
 }

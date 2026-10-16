@@ -16,6 +16,7 @@ adds columns, an index and check constraints; it does not touch applied
 migrations or RLS:
 
 1. `supabase/migrations/20261015000500_pilot_orders.sql`
+2. `supabase/migrations/20261016000600_products_and_access.sql`
 
 Then run `supabase/verify_rls.sql` and confirm every one of the ten tables
 shows `rls_enabled = true`, `rls_forced = true`, `policy_count = 0`,
@@ -94,16 +95,21 @@ Every line must start with `OK`.
 1. Go to `/owner/pilot`, enter the owner password. You get a two-hour session.
 2. Click **Start a pilot report**. The real six-step questionnaire opens with
    `support@metaphorconsultants.com` pre-filled as the delivery address.
-   Use a recognisable idea name such as `Pilot 1 — mobile dog grooming`.
+   Use a recognisable working name such as `Pilot 1 — mobile dog grooming`.
+   The form is eight questions over three screens.
 3. On the review page, confirm the email and click **Create pilot report (no
    payment)**. You land on `/report/<token>` showing "Payment confirmed" as
    the first stage (for a pilot this means "authorised by owner").
-4. Expect two emails at the pilot address: an order confirmation within a
-   minute, then the report with the PDF attached and a private link, usually
-   five to fifteen minutes later.
+4. Expect two emails at the pilot address: an order confirmation, then the
+   report with the two-page PDF attached and a private link. The page shows
+   the real stages (payment confirmed, researching, writing, ready, email sent).
 5. Confirm the link works with no account: open it in a private browser
-   window, then click **Download PDF**. The download URL is valid for two
-   minutes and is minted only for a valid token.
+   window, read the web report, then click **Download PDF**. Each click mints
+   a fresh storage URL; there is no customer-facing deadline.
+6. While still signed in on `/owner/pilot`, click **Get the detailed report**
+   on the report page: for a pilot order this creates a pilot upgrade (no
+   Stripe) and runs the detailed pipeline; a third email with the detailed PDF
+   should follow.
 
 ## 7. Where to look if it fails
 

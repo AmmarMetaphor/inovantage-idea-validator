@@ -88,9 +88,13 @@ export function PrivacyPage() {
       </ul>
       <p>We do not sell personal information.</p>
 
-      <h2>5. Retention</h2>
+      <h2>5. Retention and deletion</h2>
       <p>
-        <Placeholder>owner to decide: e.g. answers and Reports kept for X months after delivery to support re-sends and refunds, then deleted; payment records kept as required by tax law</Placeholder>
+        Your report stays available through your private link without a preset expiry, so you can
+        return to it and download the PDF again. Answers, research and reports are kept for as long
+        as the report is available. You can ask us to delete your report and answers at any time by
+        emailing {COMPANY.supportEmail} from the ordering address; deletion also revokes every link.{' '}
+        <Placeholder>owner to decide on any maximum retention period and on payment-record retention required by tax law</Placeholder>
       </p>
 
       <h2>6. International transfers</h2>

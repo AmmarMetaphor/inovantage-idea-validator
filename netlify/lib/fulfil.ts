@@ -24,7 +24,8 @@ export interface FulfilDeps {
   db: Db;
   log: Logger;
   now: () => Date;
-  expectedPriceId: string;
+  /** Stripe Price IDs per product; the session must contain exactly the order's product. */
+  expectedPriceIds: { standard: string; upgrade: string };
   reportAccessDays: number;
   /** Fire-and-forget worker kick; failures are logged, the dispatcher covers them. */
   invokeWorker: (jobId: string) => Promise<void>;
@@ -53,8 +54,16 @@ export async function fulfilCheckoutSession(deps: FulfilDeps, session: VerifiedS
   if (session.amountTotal !== order.amount_minor || (session.currency ?? '').toLowerCase() !== order.currency.toLowerCase()) {
     return { outcome: 'rejected', reason: 'amount or currency mismatch', orderId };
   }
-  if (session.lineItems.length !== 1 || session.lineItems[0].priceId !== deps.expectedPriceId || session.lineItems[0].quantity !== 1) {
+  const expectedPrice = deps.expectedPriceIds[order.product];
+  if (!expectedPrice || session.lineItems.length !== 1 || session.lineItems[0].priceId !== expectedPrice || session.lineItems[0].quantity !== 1) {
     return { outcome: 'rejected', reason: 'unexpected product in session', orderId };
+  }
+  if (order.product === 'upgrade') {
+    if (!order.parent_order_id) return { outcome: 'rejected', reason: 'upgrade order has no standard order', orderId };
+    const parent = await db.getOrder(order.parent_order_id);
+    if (!parent || parent.submission_id !== order.submission_id || (parent.status !== 'paid' && parent.status !== 'fulfilled')) {
+      return { outcome: 'rejected', reason: 'standard order is not paid', orderId };
+    }
   }
   if (!session.paymentIntentId) return { outcome: 'rejected', reason: 'no payment intent', orderId };
   if (order.status === 'refunded' || order.status === 'failed') {
@@ -62,7 +71,8 @@ export async function fulfilCheckoutSession(deps: FulfilDeps, session: VerifiedS
   }
 
   const now = deps.now();
-  const reportExpiresAt = new Date(now.getTime() + deps.reportAccessDays * 86_400_000).toISOString();
+  // Ongoing access by default (reportAccessDays = 0 → no preset expiry).
+  const reportExpiresAt = deps.reportAccessDays > 0 ? new Date(now.getTime() + deps.reportAccessDays * 86_400_000).toISOString() : null;
   const paid = await db.markOrderPaid({ orderId, paymentIntentId: session.paymentIntentId, authorisedBy: source, paidAt: now.toISOString(), reportExpiresAt });
   if (!paid.applied && paid.order.stripe_payment_intent_id && paid.order.stripe_payment_intent_id !== session.paymentIntentId) {
     log.error('fulfil.payment_intent_conflict', { order_id: orderId, source });

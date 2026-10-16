@@ -52,7 +52,7 @@ export class MemoryDb implements Db {
   }
 
   async createOrder(input: Parameters<Db['createOrder']>[0]) {
-    const existing = [...this.orders.values()].find((o) => o.submission_id === input.submission_id);
+    const existing = [...this.orders.values()].find((o) => o.submission_id === input.submission_id && o.product === input.product);
     if (existing) return { order: existing, created: false };
     const o: Order = {
       id: randomUUID(), created_at: this.ts(), status: 'pending_payment', authorised_by: null,
@@ -65,8 +65,8 @@ export class MemoryDb implements Db {
   async getOrder(id: string) {
     return this.orders.get(id) ?? null;
   }
-  async getOrderBySubmission(submissionId: string) {
-    return [...this.orders.values()].find((o) => o.submission_id === submissionId) ?? null;
+  async getOrdersBySubmission(submissionId: string) {
+    return [...this.orders.values()].filter((o) => o.submission_id === submissionId);
   }
   async getOrderByCheckoutSession(sessionId: string) {
     return [...this.orders.values()].find((o) => o.stripe_checkout_session_id === sessionId) ?? null;
@@ -101,7 +101,7 @@ export class MemoryDb implements Db {
   }
   async findActiveOrdersByEmail(emailNormalised: string, now: string, limit: number) {
     return [...this.orders.values()]
-      .filter((o) => o.email_normalised === emailNormalised && (o.status === 'paid' || o.status === 'fulfilled') && (!o.report_expires_at || o.report_expires_at > now))
+      .filter((o) => o.email_normalised === emailNormalised && o.product === 'standard' && (o.status === 'paid' || o.status === 'fulfilled') && (!o.report_expires_at || o.report_expires_at > now))
       .sort((a, b) => b.created_at.localeCompare(a.created_at))
       .slice(0, limit);
   }
@@ -225,7 +225,7 @@ export class MemoryDb implements Db {
   async upsertReport(orderId: string, patch: Partial<Omit<Report, 'id' | 'order_id'>>) {
     let r = this.reports.get(orderId);
     if (!r) {
-      r = { id: randomUUID(), order_id: orderId, version: 1, status: 'generating', content: null, verdict: null, model: null, input_tokens: null, output_tokens: null, generated_at: null, pdf_object_path: null, pdf_bytes: null, rendered_at: null, delivered_at: null };
+      r = { id: randomUUID(), order_id: orderId, version: 1, tier: 'standard', schema_version: 2, page_count: null, status: 'generating', content: null, verdict: null, model: null, input_tokens: null, output_tokens: null, generated_at: null, pdf_object_path: null, pdf_bytes: null, rendered_at: null, delivered_at: null };
       this.reports.set(orderId, r);
     }
     Object.assign(r, patch);
@@ -250,6 +250,11 @@ export class MemoryDb implements Db {
   }
   async touchAccessToken(id: string) {
     for (const t of this.tokens.values()) if (t.id === id) t.use_count += 1;
+  }
+  async revokeTokensForOrder(orderId: string, now: string) {
+    let n = 0;
+    for (const t of this.tokens.values()) if (t.order_id === orderId && !t.revoked_at) { t.revoked_at = now; n += 1; }
+    return n;
   }
 
   async recordDelivery(input: Omit<DeliveryAttempt, 'id' | 'created_at'>) {

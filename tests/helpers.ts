@@ -15,7 +15,9 @@ import { WebhookSignatureError } from '../netlify/lib/payments';
 import { StubGenerator } from '../netlify/lib/research';
 
 export const WEBHOOK_SECRET = 'whsec_test_secret_for_unit_tests';
-export const PRICE_ID = 'price_test_expected';
+export const PRICE_ID = 'price_test_standard';
+export const PRICE_ID_UPGRADE = 'price_test_upgrade';
+export const PRICE_IDS = { standard: PRICE_ID, upgrade: PRICE_ID_UPGRADE };
 export const WORKER_SECRET = 'w'.repeat(48);
 
 export const TEST_ENV = {
@@ -25,7 +27,8 @@ export const TEST_ENV = {
   SUPABASE_SERVICE_ROLE_KEY: 'sb_secret_placeholder_for_tests',
   STRIPE_SECRET_KEY: 'sk_test_placeholder',
   STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET,
-  STRIPE_PRICE_ID: PRICE_ID,
+  STRIPE_PRICE_ID_STANDARD: PRICE_ID,
+  STRIPE_PRICE_ID_UPGRADE: PRICE_ID_UPGRADE,
   ANTHROPIC_API_KEY: 'anthropic-placeholder',
   RESEND_API_KEY: 'resend-placeholder',
   EMAIL_FROM: 'Inovantage <reports@app.test>',
@@ -40,15 +43,21 @@ export class FakeGateway implements PaymentGateway {
   private stripe = new Stripe('sk_test_placeholder');
   priceMismatch = false;
 
-  async verifyPrice(priceId: string) {
-    if (this.priceMismatch || priceId !== PRICE_ID) throw new Error(`Stripe price ${priceId} does not match the configured product.`);
+  /** Amounts "Stripe" knows for each configured price. */
+  prices: Record<string, { amountMinor: number; currency: string }> = { [PRICE_ID]: { amountMinor: 1700, currency: 'gbp' }, [PRICE_ID_UPGRADE]: { amountMinor: 3500, currency: 'gbp' } };
+  async verifyPrice(priceId: string, expected: { amountMinor: number; currency: string }) {
+    const p = this.prices[priceId];
+    if (this.priceMismatch || !p || p.amountMinor !== expected.amountMinor || p.currency !== expected.currency.toLowerCase()) {
+      throw new Error(`Stripe price ${priceId} does not match the configured product.`);
+    }
   }
   async createCheckoutSession(input: Parameters<PaymentGateway['createCheckoutSession']>[0]) {
     this.created.push(input);
     const id = `cs_test_${this.created.length.toString().padStart(12, '0')}`;
+    const amount = this.prices[input.priceId]?.amountMinor ?? 0;
     this.sessions.set(id, {
       id, url: `https://checkout.stripe.test/${id}`, mode: 'payment', paymentStatus: 'unpaid', status: 'open',
-      amountTotal: 2400, currency: 'gbp', paymentIntentId: null, clientReferenceId: input.orderId, metadataOrderId: input.orderId,
+      amountTotal: amount, currency: 'gbp', paymentIntentId: null, clientReferenceId: input.orderId, metadataOrderId: input.orderId,
       lineItems: [{ priceId: input.priceId, quantity: 1 }], customerEmail: input.customerEmail, created: Math.floor(Date.now() / 1000),
     });
     return { id, url: `https://checkout.stripe.test/${id}`, expiresAtUnix: input.expiresAtUnix };
@@ -127,42 +136,36 @@ export function get(path: string, headers: Record<string, string> = {}): Request
 
 export function validAnswers(email = 'founder@example.com') {
   return {
+    ideaDescription: 'Van-based grooming at home for dog owners in north Leeds. Owners of anxious dogs struggle with salon visits.',
     ideaName: 'Northside Mobile Dog Grooming',
-    ideaSummary: 'Van-based grooming at home for dog owners in north Leeds.',
     industry: 'personal-services',
-    stage: 'idea',
-    problem: 'Owners of anxious dogs struggle with salon visits.',
-    offer: 'Full groom or wash-and-tidy at the customer home.',
-    customerDescription: 'Dog owners in north Leeds with medium/large breeds.',
-    customerType: 'b2c',
     country: 'UK',
     regionCity: 'Leeds',
-    serviceArea: 'local',
-    alternatives: 'Salon groomers; some DIY.',
     currency: 'GBP',
-    priceEstimate: { value: '45', unknown: false },
-    priceBasis: 'per-unit',
+    targetCustomer: 'Dog owners in north Leeds with medium/large breeds who want calm handling at home.',
     revenueModel: 'one-off',
-    competitors: 'Two local mobile groomers, one salon.',
-    differentiation: 'Calm handling for anxious dogs, at home.',
-    capital: { value: '8000', unknown: false },
+    priceEstimate: { value: '45', unknown: false },
+    budget: { value: '8000', unknown: false },
     hoursPerWeek: '20-35',
-    industryExperience: 'none',
-    founderExperience: 'first',
-    incomeObjective: 'replace',
-    incomeTarget: { value: '', unknown: true },
-    timeframe: '3-6',
-    startupCosts: { value: '', unknown: true },
-    fixedCosts: { value: '650', unknown: false },
-    perSaleCost: { value: '7', unknown: false },
-    acquisitionChannels: ['word-of-mouth', 'social'],
-    demandEvidence: ['conversations'],
-    demandEvidenceDetail: 'Spoke to 12 owners at the park.',
-    biggestConcern: 'Is there enough demand near me?',
+    experience: 'some',
+    stage: 'idea',
+    validation: ['conversations'],
+    evidenceDetail: 'Spoke to 12 owners at the park.',
     email,
     ackScope: true,
-    ackAccuracy: true,
     ackTerms: true,
+  };
+}
+
+/** A version-1 (six-step) answer set, as stored by submissions made before the eight-question form. */
+export function legacyAnswersV1(email = 'legacy@example.com') {
+  return {
+    ideaName: 'Legacy Idea', ideaSummary: 'An older submission.', industry: 'software', stage: 'planning', problem: 'A problem.', offer: 'An offer.',
+    customerDescription: 'Customers.', customerType: 'b2b', country: 'US', regionCity: 'Austin', serviceArea: 'online', alternatives: 'Spreadsheets.',
+    currency: 'USD', priceEstimate: { value: '20', unknown: false }, priceBasis: 'per-month', revenueModel: 'subscription', competitors: 'None known', differentiation: 'Simpler.',
+    capital: { value: '', unknown: true }, hoursPerWeek: '10-20', industryExperience: 'some', founderExperience: 'first', incomeObjective: 'side', timeframe: '6-12',
+    startupCosts: { value: '500', unknown: false }, fixedCosts: { value: '50', unknown: false }, perSaleCost: { value: '2', unknown: false },
+    acquisitionChannels: ['seo-content'], demandEvidence: ['none'], biggestConcern: 'Churn.', email, ackScope: true, ackAccuracy: true, ackTerms: true,
   };
 }
 

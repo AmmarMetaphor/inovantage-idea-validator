@@ -69,7 +69,7 @@ export async function stripeWebhook(req: Request, deps: Deps): Promise<Response>
     if (!session) throw new Error('checkout session not found at Stripe');
 
     const result = await fulfilCheckoutSession(
-      { db, log, now: deps.now, expectedPriceId: deps.env.stripePriceId, reportAccessDays: deps.env.reportAccessDays, invokeWorker: deps.invokeWorker },
+      { db, log, now: deps.now, expectedPriceIds: deps.env.stripePriceIds, reportAccessDays: deps.env.reportAccessDays, invokeWorker: deps.invokeWorker },
       session,
       'stripe_webhook',
     );

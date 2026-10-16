@@ -1,12 +1,11 @@
-import { COMPANY, PRICE } from '@/config/product';
+import { COMPANY, PRODUCTS } from '@/config/product';
 import { LegalLayout, Placeholder } from './LegalLayout';
 
 export function RefundsPage() {
   return (
     <LegalLayout title="Refund policy" pageName="refund policy">
       <p>
-        This policy explains when a payment of {PRICE.display} for an Idea Validator Report can be
-        refunded. It forms part of the terms of service.
+        This policy explains when a payment for an Idea Validator report ({PRODUCTS.standard.display} for the {PRODUCTS.standard.name}; {PRODUCTS.upgrade.display} additional for the {PRODUCTS.upgrade.name}) can be refunded. It forms part of the terms of service.
       </p>
 
       <h2>1. Before research starts</h2>
