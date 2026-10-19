@@ -5,7 +5,7 @@ import { DemoBadge } from '@/components/DemoBadge';
 import { ConfirmEmailInput } from '@/components/fields';
 import { Notice } from '@/components/Notice';
 import { usePageTitle } from '@/components/usePageTitle';
-import { currencySymbol, DELIVERY_COPY, PRICE } from '@/config/product';
+import { currencySymbol, DELIVERY_COPY, MARKETS, PRICE } from '@/config/product';
 import { DEMO_MODE } from '@/config/runtime';
 import { createCheckout, createPilotOrder } from '@/lib/api';
 import { asArray, asBool, asEstimate, asString, formatNumber, parseNumberInput } from '@/questionnaire/helpers';
@@ -72,6 +72,9 @@ export function ReviewPage() {
   }
 
   const email = asString(answers.email).trim();
+  const ideaTitle = asString(answers.ideaName).trim() || 'Your idea';
+  const marketLabel = MARKETS.find((m) => m.code === asString(answers.country))?.label ?? 'your market';
+  const regionCity = asString(answers.regionCity).trim();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -114,13 +117,25 @@ export function ReviewPage() {
   return (
     <div className="container container--form form-page page-enter">
       <div className="form-page__head">
-        <span className="eyebrow">Almost there</span>
-        <h1>Review your answers</h1>
+        <span className="eyebrow">Step 3 of 3 · Review</span>
+        <h1>Your idea deserves a closer look.</h1>
         <p>
-          Check everything is right. You can edit any section before paying. After payment, answers
-          cannot be changed because research starts straight away.
+          <strong>{ideaTitle}</strong> in {regionCity ? `${regionCity}, ` : ''}{marketLabel}. Check your answers below; you can edit any question before {pilot ? 'starting' : 'paying'}. Once research starts, answers cannot be changed.
         </p>
       </div>
+
+      <section className="card review-includes" aria-labelledby="includes-h">
+        <h2 id="includes-h" className="h4">What your {PRICE.display} report will include</h2>
+        <ul className="review-includes__list">
+          <li>An overall idea readiness score with an explanation, withheld rather than guessed if evidence is thin.</li>
+          <li>Market and execution scorecards: we’ll assess nine criteria with a reason and one way to strengthen each.</li>
+          <li>A criteria radar drawn from the same scores.</li>
+          <li>Relevant market evidence with sources, and clearly labelled assumptions where none was found.</li>
+          <li>Practical improvements, key risks and the next test to run.</li>
+          <li>An interactive online report and a concise two-page PDF, emailed to you and kept on your private page.</li>
+        </ul>
+        <p className="small muted">We’ll research {marketLabel} for this idea after {pilot ? 'the pilot starts' : 'payment'}; nothing has been assessed yet.</p>
+      </section>
 
       {invalid >= 0 && (
         <Notice tone="warning" title="Some answers are missing">
@@ -192,7 +207,7 @@ export function ReviewPage() {
               ) : pilot ? (
                 <>Create pilot report (no payment)</>
               ) : (
-                <>Continue to payment · {PRICE.display} one-time</>
+                <>Pay {PRICE.display} and start my report</>
               )}
             </Button>
           </div>

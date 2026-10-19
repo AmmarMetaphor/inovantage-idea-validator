@@ -5,6 +5,7 @@
   unguessable token from the email link; it is sent in a POST body, never in
   a query string, so it does not land in server access logs.
 */
+import { PRODUCTS } from '@/config/product';
 import { DEMO_MODE } from '@/config/runtime';
 import type { Answers } from '@/questionnaire/types';
 import { maskEmail } from '@/questionnaire/helpers';
@@ -38,6 +39,8 @@ export interface TierStatus {
 export interface ReportStatus {
   reportRef: string;
   ideaName: string;
+  /** Primary market code (UK, US, AU). */
+  market?: string;
   orderedAt: string;
   expiresAt: string | null;
   emailMasked: string;
@@ -194,7 +197,7 @@ export async function getReportStatus(tokenOrDemoRef: string): Promise<ReportSta
     // Demo mode does not simulate progress: the pipeline is simply not run.
     const stage: ReportStage = order.paidAt ? 'payment_confirmed' : 'confirming_payment';
     const tier: TierStatus = { stage, label: stage === 'payment_confirmed' ? 'Payment confirmed (demo: no processing)' : 'Confirming your payment', pdfAvailable: false, emailSent: false, confirmationEmailSent: false, verdict: null, job: { state: 'none', attempts: 0, nextRetryAt: null } };
-    return { reportRef: tokenOrDemoRef, ideaName: 'Demo idea', orderedAt: order.createdAt, expiresAt: null, emailMasked: order.emailMasked, isPilot: false, standard: tier, detailed: null, upgrade: { price: '£35', priceNote: 'additional, one-time payment', available: false }, demo: true };
+    return { reportRef: tokenOrDemoRef, ideaName: 'Demo idea', orderedAt: order.createdAt, expiresAt: null, emailMasked: order.emailMasked, isPilot: false, standard: tier, detailed: null, upgrade: { price: PRODUCTS.upgrade.display, priceNote: PRODUCTS.upgrade.priceNote, available: false }, demo: true };
   }
   const s = await request<Omit<ReportStatus, 'demo'>>('/api/report-status', { method: 'POST', body: JSON.stringify({ token: tokenOrDemoRef }) });
   return { ...s, demo: false };

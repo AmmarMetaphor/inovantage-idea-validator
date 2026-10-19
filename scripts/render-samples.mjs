@@ -21,9 +21,9 @@ const cases = [
 
 for (const c of cases) {
   const answers = c.sparse
-    ? { ideaDescription: 'A café.', industry: 'food-drink', country: c.market, regionCity: 'Somewhere', targetCustomer: 'People', revenueModel: 'unsure', priceEstimate: { value: '', unknown: true }, budget: { value: '', unknown: true }, hoursPerWeek: 'lt5', experience: 'none', stage: 'idea', validation: ['none'], email: 'x@y.z', ackScope: true, ackTerms: true }
-    : { ideaDescription: 'Van-based grooming at home.', industry: 'personal-services', country: c.market, regionCity: 'Leeds', targetCustomer: 'Dog owners', revenueModel: 'one-off', priceEstimate: { value: '45', unknown: false }, budget: { value: '8000', unknown: false }, hoursPerWeek: '20-35', experience: 'some', stage: 'idea', validation: ['conversations'], email: 'x@y.z', ackScope: true, ackTerms: true };
-  const brief = buildBrief({ orderRef: 'SAMPLE01', market: c.market, currency: c.market === 'US' ? 'USD' : c.market === 'AU' ? 'AUD' : 'GBP', ideaName: c.ideaName, answers, answersVersion: 2 });
+    ? { ideaDescription: 'A café.', industry: 'food-drink', country: c.market, targetCustomer: 'People', revenueModel: 'unsure', priceEstimate: { value: '', unknown: true }, budget: { value: '', unknown: true }, hoursPerWeek: 'lt5', experience: 'none', stage: 'idea', email: 'x@y.z', ackScope: true, ackTerms: true }
+    : { ideaDescription: 'Van-based grooming at home.', industry: 'personal-services', country: c.market, regionCity: 'Leeds', targetCustomer: 'Dog owners', differentiation: 'At-home, calm handling', revenueModel: 'one-off', priceEstimate: { value: '45', unknown: false }, budget: { value: '8000', unknown: false }, hoursPerWeek: '20-35', experience: 'some', stage: 'idea', progressNote: 'Spoke to 12 owners', email: 'x@y.z', ackScope: true, ackTerms: true };
+  const brief = buildBrief({ orderRef: 'SAMPLE01', market: c.market, currency: c.market === 'US' ? 'USD' : c.market === 'AU' ? 'AUD' : 'GBP', ideaName: c.ideaName, answers, answersVersion: 3 });
   const report = stubStandardReport(brief, c.long);
   if (c.long) {
     report.sources = Array.from({ length: 8 }, (_, i) => ({ ...report.sources[0], index: i + 1, title: `Source ${i + 1}: ` + 'A deliberately long source title that keeps going '.repeat(2), url: `https://example.invalid/${'very-long-path-segment-'.repeat(8)}${i}` }));

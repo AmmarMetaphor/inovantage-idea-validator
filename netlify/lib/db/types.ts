@@ -17,6 +17,8 @@ export interface Submission {
   currency: 'GBP' | 'USD' | 'AUD';
   idea_name: string;
   answers: Json;
+  /** Questionnaire schema version the answers were collected with (1, 2 or 3). */
+  answers_version: number;
   status: 'draft' | 'ordered' | 'paid' | 'expired';
   source: 'public' | 'pilot';
   client_request_id: string | null;

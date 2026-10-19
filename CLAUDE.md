@@ -14,8 +14,16 @@ downloadable PDF. No customer account exists or is planned.
   idea in one primary market.
 - **Products:** `PRODUCTS` in `src/config/product.ts` is the single source of
   truth for UI and server: Idea Validation Report £17 (1700 GBP) and the
-  Detailed Report Upgrade £35 **additional** (3500 GBP; £52 combined). Never
-  hard-code prices in copy; always say the upgrade is additional.
+  Detailed Report Upgrade £34 **additional** (3400 GBP; £51 combined). Never
+  hard-code prices in copy; always say the upgrade is additional and never
+  imply £34 is a total. `UPGRADE_INCLUDES` lists what the upgrade adds.
+- **Report:** header with the idea readiness score out of 100, evidence
+  confidence, strongest supported opportunity and next action; market and
+  execution factor cards with bars; criteria radar; market chart (evidence
+  only, else labelled scenario or data gap); financial scenarios computed in
+  code; risks; recommendations (action, purpose, measure); the first test;
+  sources and limitations; locked previews of the detailed sections; the
+  consultation line with a clickable support@inovantage.co.uk.
 - **Delivery:** a private report page (interactive web report + PDF download)
   and an email with the PDF attached. No turnaround promise anywhere: use
   `DELIVERY_COPY` ("We'll email you when your report is ready").
@@ -27,7 +35,7 @@ downloadable PDF. No customer account exists or is planned.
 | Route                  | Component                 | Purpose                                      |
 | ---------------------- | ------------------------- | -------------------------------------------- |
 | `/`                    | `LandingPage`             | Branded landing page, pricing, FAQ           |
-| `/validate/:step`      | `QuestionnairePage`       | Six-step questionnaire (1–6)                 |
+| `/validate/:step`      | `QuestionnairePage`       | Eight questions over three steps (1–3)       |
 | `/review`              | `ReviewPage`              | Answer review, email confirmation, checkout start |
 | `/checkout`            | `CheckoutPage`            | Simulated checkout (demo) / cancelled return |
 | `/checkout/return`     | `CheckoutReturnPage`      | Live return from Stripe; polls server verification |
@@ -39,21 +47,23 @@ downloadable PDF. No customer account exists or is planned.
 
 ## Questionnaire
 
-Defined declaratively in `src/questionnaire/schema.ts` (version 2): eight
-numbered questions over three screens. Fields sharing a `question` number
-render as one compact question.
+Defined declaratively in `src/questionnaire/schema.ts` (version 3): eight
+numbered questions over three steps. Fields sharing a `question` number
+render as one compact question. Required answers are the minimum the
+research needs; everything else is optional or allows "Not sure yet".
 
-1. Business idea and problem solved (plus optional working name).
-2. Industry (searchable combobox; typed values are kept as "Other").
-3. Operating market (UK/US/AU) and city/region.
-4. Target customer and reason to be chosen.
-5. Revenue model and expected price ("Not sure" allowed).
-6. Founder resources: budget, weekly time, experience.
-7. Current stage, validation attempted, evidence.
+1. Business idea (plus optional working name).
+2. Who would buy it, and what problem it solves.
+3. Industry (searchable combobox; typed values are kept as "Other").
+4. Launch country (UK/US/AU), optional city or region.
+5. What makes the approach different (optional).
+6. Revenue model and optional intended price ("Not sure yet" allowed).
+7. Resources: budget ("Not sure yet"), weekly time, experience, stage, optional progress note.
 8. Email and the two acknowledgements.
 
-`schema-v1.ts` keeps the old six-step schema so reports for existing
-submissions (`answers_version = 1`) can still be built. Do not delete it.
+`schema-v2.ts` and `schema-v1.ts` keep the earlier shapes so reports for
+existing submissions (`submissions.answers_version` 2 or 1) can still be
+built. Do not delete or edit them; `buildBrief` picks the schema by version.
 
 Rules:
 
@@ -160,8 +170,20 @@ Read `docs/BACKEND.md` before touching `netlify/` or `supabase/`.
   carry `parent_order_id` and are fulfilled only if the parent is paid. Any
   token for a submission's orders opens the same report page; premium
   content is returned only when the upgrade order is paid.
+- **Scoring.** `src/config/scoring.ts` is the single scoring model: nine
+  criteria (five market, four execution; higher always more favourable),
+  published weights (market 10 each, execution 12.5 each), 0–100 criterion
+  scores with a basis (`evidence` | `assumption` | `insufficient`), and the
+  overall "Idea readiness score" as the weighted mean computed in code.
+  Insufficient criteria are excluded, never zero; the overall score is
+  withheld ("Assessment incomplete") below six criteria or 60% of the
+  weight. No floors, inflation or purchase-driven adjustment, ever.
+  `src/config/headline.ts` derives the header fields (band, confidence,
+  strongest supported opportunity, next action) from report data for both
+  the web report and the PDF; keep them reading the same fields.
 - **Reports.** `netlify/lib/report-schema.ts` holds the Zod schemas with
-  editorial limits; it is the application model and is **never sent to
+  editorial limits (nine scorecard items, recommendations with action,
+  purpose and measure); it is the application model and is **never sent to
   Anthropic**. Composition runs several small parallel requests, one flat
   `netlify/lib/generation-schema.ts` part each (≤ 16 properties, no nested
   objects/unions/enums/optionals, no tools) and merges them explicitly;
@@ -197,7 +219,8 @@ Read `docs/BACKEND.md` before touching `netlify/` or `supabase/`.
   unpaid and cross-customer access, link recovery, interrupted jobs,
   bounded retries, the owner session and pilot allowlist, standard and
   upgrade pricing, unpaid premium content, real progress states, the
-  two-page guard, finance maths and the eight-question schema. Add a test
+  two-page guard, finance maths, the scoring model and the eight-question
+  schema. `tests/e2e/screenshots.mjs` renders the key screens. Add a test
   for every new trust boundary. `npm run pdf:samples` renders inspection PDFs.
 
 ## What remains for the owner

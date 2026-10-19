@@ -23,10 +23,10 @@ function jobDeps(h: Harness) {
 }
 
 describe('Product definition', () => {
-  it('prices are centralised: £17 standard, £35 additional upgrade, £52 combined', () => {
+  it('prices are centralised: £17 standard, £34 additional upgrade, £51 combined', () => {
     expect(PRODUCTS.standard.amountMinor).toBe(1700);
-    expect(PRODUCTS.upgrade.amountMinor).toBe(3500);
-    expect(COMBINED_TOTAL.amountMinor).toBe(5200);
+    expect(PRODUCTS.upgrade.amountMinor).toBe(3400);
+    expect(COMBINED_TOTAL.amountMinor).toBe(5100);
     expect(PRODUCTS.upgrade.priceNote).toMatch(/additional/);
     expect(PRODUCTS.standard.stripePriceEnv).toBe('STRIPE_PRICE_ID_STANDARD');
     expect(PRODUCTS.upgrade.stripePriceEnv).toBe('STRIPE_PRICE_ID_UPGRADE');
@@ -53,7 +53,7 @@ describe('Upgrade purchase', () => {
     const body = (await first.json()) as { checkoutUrl: string };
     expect(body.checkoutUrl).toMatch(/^https:\/\/checkout\.stripe\.test\//);
     const upgrade = [...h.db.orders.values()].find((o) => o.product === 'upgrade')!;
-    expect(upgrade.amount_minor).toBe(3500);
+    expect(upgrade.amount_minor).toBe(3400);
     expect(upgrade.parent_order_id).toBe(order.id);
     expect(upgrade.status).toBe('pending_payment');
     expect(h.gateway.created.at(-1)!.priceId).toBe(PRICE_ID_UPGRADE);

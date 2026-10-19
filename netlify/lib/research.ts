@@ -16,13 +16,15 @@ import Anthropic, { APIError } from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { CURRENCIES, MARKETS } from '../../src/config/product';
 import { asArray, asBool, asEstimate, asString } from '../../src/questionnaire/helpers';
-import { STEPS, optionLabel, visibleFields } from '../../src/questionnaire/schema';
+import { STEPS, isExistingBusinessV3, optionLabel, visibleFields } from '../../src/questionnaire/schema';
 import { STEPS_V1 } from '../../src/questionnaire/schema-v1';
+import { STEPS_V2 } from '../../src/questionnaire/schema-v2';
 import type { Answers, Step } from '../../src/questionnaire/types';
 import type { ResearchSource } from './db/types';
 import { z } from 'zod';
 import { DETAILED_SECTION_GROUPS, FINANCE_KEYS, GENERATION_SCHEMAS, mapDetailedParts, mapStandardParts, type MappingDiagnostics, type StandardParts } from './generation-schema';
-import { SCORECARD_IDS, VERDICTS, type DetailedReport, type StandardReport } from './report-schema';
+import { CRITERIA } from '../../src/config/scoring';
+import { VERDICTS, type DetailedReport, type StandardReport } from './report-schema';
 
 export interface Brief {
   orderRef: string;
@@ -123,12 +125,12 @@ export function classifyApiError(err: unknown, stage: RequestDiagnostic['stage']
 }
 
 /* ---------------------------------------------------------------------------
-   Brief construction (works for answers_version 1 and 2)
+   Brief construction (works for answers_version 1, 2 and 3)
 --------------------------------------------------------------------------- */
 
 export function buildBrief(input: { orderRef: string; market: 'UK' | 'US' | 'AU'; currency: string; ideaName: string; answers: Answers; answersVersion?: number }): Brief {
-  const version = input.answersVersion ?? (input.answers.ideaDescription !== undefined ? 2 : 1);
-  const steps: Step[] = version >= 2 ? STEPS : STEPS_V1;
+  const version = input.answersVersion ?? (input.answers.ideaDescription !== undefined ? 3 : 1);
+  const steps: Step[] = version >= 3 ? STEPS : version === 2 ? STEPS_V2 : STEPS_V1;
   const sym = CURRENCIES.find((c) => c.code === input.currency)?.symbol ?? '';
   const lines: string[] = [];
   const unknowns: string[] = [];
@@ -163,7 +165,6 @@ export function buildBrief(input: { orderRef: string; market: 'UK' | 'US' | 'AU'
     }
   }
   if (asBool(input.answers.ackScope)) lines.push('Customer acknowledged the report is general guidance, not advice.');
-  const stage = asString(input.answers.stage);
   return {
     orderRef: input.orderRef,
     market: input.market,
@@ -171,7 +172,7 @@ export function buildBrief(input: { orderRef: string; market: 'UK' | 'US' | 'AU'
     ideaName: input.ideaName,
     lines,
     unknowns,
-    existingBusiness: ['trading-new', 'trading-established'].includes(stage),
+    existingBusiness: isExistingBusinessV3(input.answers),
     answersVersion: version,
   };
 }
@@ -210,20 +211,23 @@ ${EVIDENCE_RULES}`;
 const FINANCE_INSTRUCTION = `Financial inputs as six parallel arrays in this order: ${FINANCE_KEYS.join(', ')} (price and variable_cost per sale, fixed_monthly per month, volumes as monthly sales for a low, base and high case). finance_known[i] is true when a figure can be given (a customer figure, a sourced figure or a labelled assumption) and false when nobody knows; finance_values[i] is the figure in the stated currency (ignored when not known); finance_basis[i] is "customer_input", "evidence" or "assumption"; finance_notes[i] explains it in ≤ 20 words. If the customer said NOT SURE, give a labelled assumption rather than a blank. price_unit is "sale", "hour", "month" or similar. Do NOT compute the scenario table; the system computes it.`;
 
 const PART_INSTRUCTIONS: Record<keyof StandardParts, string> = {
-  verdict: `Part 1 of 3: verdict, scorecard, SWOT and limitations.
+  verdict: `Part 1 of 3: verdict, criterion scores and SWOT.
 - title ≤ 10 words; idea_summary ≤ 25 words.
-- verdict: exactly one of ${VERDICTS.map((v) => `"${v}"`).join(', ')}. verdict_explanation ≤ 85 words, grounded in the sources and the customer's answers.
-- scores: exactly five integers in this order: ${SCORECARD_IDS.join(', ')}. Use 1–5, or 0 when the evidence is insufficient to rate. score_notes: five notes in the same order, ≤ 18 words each.
-- strengths, weaknesses, opportunities, threats: up to 3 items each, ≤ 14 words each.
-- limitations: up to 4 items, ≤ 20 words each: what could not be found or verified, including every input the customer marked NOT SURE.`,
+- verdict: exactly one of ${VERDICTS.map((v) => `"${v}"`).join(', ')}. verdict_explanation ≤ 85 words: constructive, specific, grounded in the sources and the customer's answers; say what is supported, what needs strengthening and the most useful next action. Never say an idea is bad or doomed; never guarantee success.
+- scores: exactly nine integers from 0 to 100, one per criterion in this order, where higher always means more favourable for the founder:
+${CRITERIA.map((c, i) => `  ${i + 1}. ${c.id} (${c.label}): ${c.rubric}`).join('\n')}
+  score_basis: nine entries in the same order: "evidence" when the score rests on a cited source, "assumption" when it rests on the customer's answers or reasonable assumptions, "insufficient" when neither supports a rating (the score for that entry is then ignored; never give 0 to mean unknown). Do not inflate scores or impose a floor.
+  score_notes: nine brief reasons (≤ 22 words each). score_improvements: nine entries (≤ 22 words each), one practical way to strengthen that criterion, or "" when it is already strong.
+- strengths, weaknesses, opportunities, threats: up to 3 items each, ≤ 14 words each. Strengths and opportunities must be supported; do not invent positives.`,
   finance: `Part 2 of 3: financial inputs and the evidence chart.
 ${FINANCE_INSTRUCTION}
 Chart: chart_kind is "evidence" only when a listed source supplies the series; then chart_source_ids holds that source's id for each point (same length as chart_values). Otherwise "scenario" (label the basis in chart_note) or "none" (state the data gap in chart_note and leave labels and values empty). At most 6 points; chart_labels ≤ 3 words each; chart_title ≤ 10 words; chart_unit is the unit of the values; chart_note ≤ 30 words.`,
-  action: `Part 3 of 3: risks, improvements, experiment and sources.
-- risks: exactly 3, ≤ 18 words each; risk_validations: the cheap way to test each risk, same order, ≤ 20 words each.
-- improvements: exactly 5 specific, prioritised changes, ≤ 22 words each.
-- experiment_description ≤ 35 words: one cheap test; experiment_budget as a number in the stated currency; experiment_duration (e.g. "4 weeks"); experiment_success: a measurable criterion ≤ 25 words.
-- source_ids_used: the ids of every research source the report relies on (at most 8), with source_uses giving what each was used for (≤ 15 words, same order). Only ids from the supplied list.`,
+  action: `Part 3 of 3: risks, recommendations, experiment, sources and limitations.
+- risks: exactly 3, ≤ 18 words each; risk_validations: the cheap way to test each risk, same order, ≤ 20 words each. Keep material financial, operational or regulatory concerns visible.
+- improvements: exactly 5 prioritised recommendations (the action, ≤ 22 words each); improvement_purposes: why each matters (≤ 20 words, same order); improvement_measures: a practical success measure for each, phrased as a suggestion (≤ 20 words, same order). If the current approach is unworkable, make the first recommendation a viable alternative where one exists.
+- experiment_description ≤ 35 words: the one cheap test to run first; experiment_budget as a number in the stated currency; experiment_duration (e.g. "4 weeks"); experiment_success: a measurable criterion ≤ 25 words, labelled as a suggested threshold.
+- source_ids_used: the ids of every research source the report relies on (at most 8), with source_uses giving what each was used for (≤ 15 words, same order). Only ids from the supplied list.
+- limitations: up to 4 items, ≤ 20 words each: what could not be found or verified, including every input the customer marked NOT SURE.`,
 };
 
 const DETAILED_PART_INSTRUCTIONS = {
@@ -468,13 +472,12 @@ export function stubStandardReport(brief: Brief, long = false): StandardReport {
     title: pad(`Feasibility verdict (STUB): ${brief.ideaName}`, 80),
     idea_summary: pad(STUB_NOTE, 160),
     verdict: { label: 'Refine before investing', explanation: pad(STUB_NOTE, 600) },
-    scorecard: [
-      { id: 'demand', score: null, note: pad('No research performed.', 130) },
-      { id: 'competition', score: 2, note: pad('Stub rating.', 130) },
-      { id: 'differentiation', score: 3, note: pad('Stub rating.', 130) },
-      { id: 'financial_clarity', score: brief.unknowns.length ? 2 : 4, note: pad('Based on inputs only.', 130) },
-      { id: 'founder_fit', score: 3, note: pad('Stub rating.', 130) },
-    ],
+    scorecard: CRITERIA.map((c, i) => {
+      const insufficient = i === 1 || (brief.unknowns.length > 0 && c.id === 'feasibility');
+      return insufficient
+        ? { id: c.id, score: null, basis: 'insufficient' as const, note: pad('No research performed: not enough evidence.', 150), improvement: pad('Stub: gather evidence.', 150) }
+        : { id: c.id, score: [52, 0, 68, 44, 61, 73, 58, brief.unknowns.length ? 0 : 47, 39][i], basis: i % 3 === 0 ? ('evidence' as const) : ('assumption' as const), note: pad('Stub rating.', 150), improvement: pad(`Stub improvement for ${c.short.toLowerCase()}.`, 150) };
+    }),
     chart: { kind: 'none', title: 'Local demand indicators', unit: '', series: [], note: pad('No market data retrieved: stub run.', 200) },
     swot: {
       strengths: [pad('Stub strength', 90)],
@@ -493,7 +496,7 @@ export function stubStandardReport(brief: Brief, long = false): StandardReport {
       { risk: pad('Stub risk two', 110), validation_method: pad('Price test with deposits', 130) },
       { risk: pad('Stub risk three', 110), validation_method: pad('Quote real costs', 130) },
     ],
-    improvements: [1, 2, 3, 4, 5].map((i) => pad(`Stub improvement ${i}`, 150)),
+    improvements: [1, 2, 3, 4, 5].map((i) => ({ action: pad(`Stub improvement ${i}`, 150), purpose: pad(`Stub purpose ${i}`, 140), measure: pad(`Suggested measure ${i}`, 140) })),
     experiment: { description: pad('Stub experiment', 220), budget_amount: 150, duration: '4 weeks', success_criterion: pad('Ten paid deposits', 160) },
     sources: [{ index: 1, title: pad('STUB SOURCE — not real research', 110), url: long ? 'https://example.invalid/' + 'a-very-long-path-segment/'.repeat(10) : 'https://example.invalid/stub', publisher: 'example.invalid', published_date: null, geography: brief.market, unit: null, period: null, claim_type: 'other', used_for: pad('nothing', 120) }],
     limitations: [pad('All of it: no research was performed.', 130), ...brief.unknowns.slice(0, 3).map((u) => pad(`Not provided: ${u}`, 130))],

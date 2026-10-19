@@ -83,7 +83,7 @@ describe('Report access: unpaid, unknown, expired and cross-customer', () => {
     const res = await reportStatus(post('/api/report-status', { token: aliceToken }), h.deps);
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
-    expect(Object.keys(body).sort()).toEqual(['detailed', 'emailMasked', 'expiresAt', 'ideaName', 'isPilot', 'orderedAt', 'reportRef', 'standard', 'upgrade']);
+    expect(Object.keys(body).sort()).toEqual(['detailed', 'emailMasked', 'expiresAt', 'ideaName', 'isPilot', 'market', 'orderedAt', 'reportRef', 'standard', 'upgrade']);
     expect(body.emailMasked).toBe('al***@example.com');
     expect((body.standard as { stage: string }).stage).toBe('payment_confirmed');
     expect(body.expiresAt).toBeNull(); // ongoing access: no preset expiry

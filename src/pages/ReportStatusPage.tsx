@@ -5,9 +5,10 @@ import { DemoBadge } from '@/components/DemoBadge';
 import { Notice } from '@/components/Notice';
 import { usePageTitle } from '@/components/usePageTitle';
 import { DetailedReportView } from '@/components/report/DetailedReportView';
-import { ConsultationCta, EvidenceChart, Experiment, FinancialTable, Improvements, Risks, Scorecard, Sources, Swot, UpgradeCta, VerdictBanner } from '@/components/report/ReportParts';
+import { ConsultationCta } from '@/components/report/ReportParts';
+import { StandardReportView } from '@/components/report/StandardReportView';
 import type { DetailedReport, StandardReport } from '@/components/report/types';
-import { COMPANY, DELIVERY_COPY } from '@/config/product';
+import { COMPANY, DELIVERY_COPY, MARKETS } from '@/config/product';
 import { DEMO_MODE } from '@/config/runtime';
 import { createUpgradeCheckout, getReportContent, getReportDownloadUrl, getReportStatus, isDemoReference, type FinancialResult, type ReportStage, type ReportStatus, type TierStatus } from '@/lib/api';
 import { useQuestionnaire } from '@/questionnaire/store';
@@ -20,7 +21,7 @@ const PAID_STEPS: Step[] = [
   { stage: 'confirming_payment', title: 'Confirming your payment', desc: 'Checking with the payment provider.' },
   { stage: 'payment_confirmed', title: 'Payment confirmed', desc: 'Your order is queued for research.' },
   { stage: 'researching', title: 'Researching', desc: 'Gathering public evidence for your market.' },
-  { stage: 'writing', title: 'Writing your report', desc: 'Composing the verdict, scorecard and scenarios; rendering the PDF.' },
+  { stage: 'writing', title: 'Writing your report', desc: 'Scoring the criteria, computing the scenarios and rendering the PDF.' },
   { stage: 'ready', title: 'Report ready', desc: 'The web report and PDF are available below.' },
   { stage: 'email_sent', title: 'Email sent', desc: 'The report email with the PDF has been sent.' },
 ];
@@ -29,7 +30,7 @@ const PILOT_STEPS: Step[] = [
   { stage: 'submission_received', title: 'Submission received', desc: 'Your answers are stored and the job is created. No payment is involved.' },
   { stage: 'queued_for_research', title: 'Queued for research', desc: 'Waiting for a worker to start the research.' },
   { stage: 'researching', title: 'Researching', desc: 'Gathering public evidence for your market.' },
-  { stage: 'writing', title: 'Writing your report', desc: 'Composing the verdict, scorecard and scenarios; rendering the PDF.' },
+  { stage: 'writing', title: 'Writing your report', desc: 'Scoring the criteria, computing the scenarios and rendering the PDF.' },
   { stage: 'ready', title: 'Report ready', desc: 'The web report and PDF are available below.' },
   { stage: 'email_sent', title: 'Email sent', desc: 'The report email with the PDF has been sent.' },
 ];
@@ -66,6 +67,10 @@ function Timeline({ tier, emailMasked, pilot }: { tier: TierStatus; emailMasked:
       })}
     </ol>
   );
+}
+
+function marketLabelFor(code: string | undefined): string {
+  return MARKETS.find((m) => m.code === code)?.label ?? 'your market';
 }
 
 export function ReportStatusPage() {
@@ -165,7 +170,7 @@ export function ReportStatusPage() {
         <h1>{title}</h1>
         {status && (
           <p>
-            {status.ideaName} · reference <span className="code">{status.reportRef}</span>. Keep the email we sent; its link brings you back here any time.
+            {status.ideaName} · reference <span className="code">{status.reportRef}</span>. The link in your email brings you back here any time.
           </p>
         )}
       </div>
@@ -231,28 +236,15 @@ export function ReportStatusPage() {
             </div>
           )}
           {view === 'standard' || !detailed ? (
-            <article className="web-report" aria-label="Standard report">
-              <header className="web-report__head">
-                <p className="eyebrow">Idea validation report · {status!.reportRef} · {standard.generatedAt ? standard.generatedAt.slice(0, 10) : ''}</p>
-                <h2>{standard.content.title}</h2>
-                <p className="lead">{standard.content.idea_summary}</p>
-              </header>
-              <VerdictBanner report={standard.content} />
-              <div className="web-report__grid">
-                <Scorecard report={standard.content} />
-                <EvidenceChart chart={standard.content.chart} sources={standard.content.sources} />
-              </div>
-              <Swot swot={standard.content.swot} />
-              <FinancialTable fin={standard.fin} />
-              <Risks risks={standard.content.risks} />
-              <div className="web-report__grid">
-                <Improvements items={standard.content.improvements} />
-                <Experiment ex={standard.content.experiment} currency={standard.fin.currency} />
-              </div>
-              <Sources sources={standard.content.sources} claims={standard.content.claims} limitations={standard.content.limitations} retrievedOn={standard.generatedAt ? standard.generatedAt.slice(0, 10) : null} />
-              <ConsultationCta reportRef={status!.reportRef} />
-              <UpgradeCta onUpgrade={upgrade} busy={upgradeBusy} error={upgradeError} available={status!.upgrade.available} purchased={!!status!.detailed?.purchased} />
-            </article>
+            <StandardReportView
+              report={standard.content}
+              fin={standard.fin}
+              marketLabel={marketLabelFor(status!.market)}
+              reportRef={status!.reportRef}
+              generatedOn={standard.generatedAt ? standard.generatedAt.slice(0, 10) : null}
+              ideaName={status!.ideaName}
+              upgrade={{ onUpgrade: upgrade, busy: upgradeBusy, error: upgradeError, available: status!.upgrade.available, purchased: !!status!.detailed?.purchased }}
+            />
           ) : (
             <>
               <DetailedReportView report={detailed.content} fin={detailed.fin} generatedAt={detailed.generatedAt} />

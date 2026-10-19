@@ -69,13 +69,8 @@
 }
 
 .hero__panel {
-  display: none;
-}
-
-@media (min-width: 56em) {
-  .hero__panel {
-    display: block;
-  }
+  display: block;
+  min-width: 0;
 }
 
 /* Abstract document illustration (no fake data) */

@@ -54,6 +54,26 @@
   --color-accent: var(--color-sand-500);
   --color-focus: #2f6fd6;
 
+  /* ---- Score tones (always paired with text) --------------------------- */
+  --tone-strong: #1f6f4a;
+  --tone-strong-bg: #e3f3ea;
+  --tone-moderate: #8a5a00;
+  --tone-moderate-bg: #fff3d6;
+  --tone-weak: #b3261e;
+  --tone-weak-bg: #fbe7e5;
+  --tone-na: #4a6a95;
+  --tone-na-bg: #eaf0f7;
+
+  /* ---- Chart colours (distinct, complementary, brand-adjacent) ---------- */
+  --chart-1: #0f2440;   /* navy: reported figures */
+  --chart-2: #b8995a;   /* gold: illustrative scenario */
+  --chart-3: #2a7f8f;   /* teal: execution factors */
+  --chart-4: #7a4b8f;   /* plum: forecasts / secondary series */
+  --chart-grid: #e4e9f1;
+  --chart-text: #4a6a95;
+  --radar-fill: rgba(15, 36, 64, 0.14);
+  --radar-stroke: #0f2440;
+
   /* ---- Typography ------------------------------------------------------ */
   /* System stacks: no third-party font requests, no layout shift. */
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,

@@ -71,11 +71,18 @@ exposed; customers see an 8-character short reference only.
    | Product name | Price | Variable for its Price ID | Server expects |
    | --- | --- | --- | --- |
    | Idea Validation Report | £17.00 | `STRIPE_PRICE_ID_STANDARD` | 1700 GBP |
-   | Detailed Report Upgrade | £35.00 | `STRIPE_PRICE_ID_UPGRADE` | 3500 GBP |
+   | Detailed Report Upgrade | £34.00 | `STRIPE_PRICE_ID_UPGRADE` | 3400 GBP |
 
    The server re-reads each Price at checkout time and refuses to create a
    session if the amount or currency differs from `src/config/product.ts`.
-   The upgrade is additional (£52 combined); the UI says so everywhere.
+   The upgrade is additional (£51 combined); the UI says so everywhere.
+
+   **Price change (£35 → £34).** A Stripe Price is immutable. Create a new
+   Price of 3400 GBP on the upgrade Product in the Stripe dashboard (test
+   mode), set `STRIPE_PRICE_ID_UPGRADE` to the new `price_…` id, and archive
+   the old 3500 Price. Until the variable is updated, `verifyPrice` refuses
+   to create upgrade checkouts because the Price amount no longer matches
+   `PRODUCTS.upgrade.amountMinor`; nothing is charged at the old price.
 2. Developers → Webhooks → add an endpoint:
 
    ```

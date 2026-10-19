@@ -2,6 +2,7 @@ import { PRODUCTS } from '../../../src/config/product';
 import { hashIp, normaliseEmail, sha256Hex, shortRef } from '../crypto';
 import type { Deps } from '../deps';
 import { clientIp, HttpError, isObject, json, readJson, requireMethod } from '../http';
+import { ANSWERS_VERSION } from '../../../src/questionnaire/schema';
 import { MAX_BODY_BYTES, validateSubmission } from '../validation';
 import { enforceRateLimit } from './ratelimit';
 
@@ -35,6 +36,7 @@ export async function createSubmission(req: Request, deps: Deps, contextIp?: str
     currency: v.currency,
     idea_name: v.ideaName,
     answers: v.answers,
+    answers_version: ANSWERS_VERSION,
     source: 'public',
     client_request_id: clientRequestId,
     ip_hash: ip,

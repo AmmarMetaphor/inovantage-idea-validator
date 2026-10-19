@@ -15,6 +15,7 @@ import { loadEnv, type Env } from '../env';
 import { clientIp, HttpError, isObject, json, readJson, requireMethod } from '../http';
 import { clearCookie, createOwnerSession, OWNER_COOKIE, OWNER_SESSION_SECONDS, readCookie, sessionCookie, verifyOwnerSession } from '../session';
 import { mintAccessToken } from '../tokens';
+import { ANSWERS_VERSION } from '../../../src/questionnaire/schema';
 import { MAX_BODY_BYTES, validateSubmission } from '../validation';
 import { enforceRateLimit } from './ratelimit';
 
@@ -130,6 +131,7 @@ export async function createPilotOrder(req: Request, deps: Deps, contextIp?: str
     currency: v.currency,
     idea_name: v.ideaName,
     answers: v.answers,
+    answers_version: ANSWERS_VERSION,
     source: 'pilot',
     client_request_id: clientRequestId,
     ip_hash: ip,

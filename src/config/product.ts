@@ -37,7 +37,7 @@ export function currencyForMarket(code: MarketCode | string | undefined): Curren
 
 /* ---------------------------------------------------------------------------
    Products. Two one-time purchases. The upgrade is ADDITIONAL to the standard
-   report: a customer who buys both spends £52 in total.
+   report: a customer who buys both spends £51 in total.
 --------------------------------------------------------------------------- */
 
 export type ProductId = 'standard' | 'upgrade';
@@ -67,7 +67,7 @@ export const PRODUCTS: Record<ProductId, Product> = {
     currency: 'GBP',
     display: '£17',
     priceNote: 'one-time payment',
-    description: 'A two-page, evidence-based verdict on one idea in one market, with a web report and PDF.',
+    description: 'An evidence-based assessment of one idea in one market: readiness score, factor scorecards, criteria radar, evidence, improvements and the next test, as an interactive web report and a two-page PDF.',
     stripePriceEnv: 'STRIPE_PRICE_ID_STANDARD',
     requires: null,
   },
@@ -75,11 +75,11 @@ export const PRODUCTS: Record<ProductId, Product> = {
     id: 'upgrade',
     name: 'Detailed Report Upgrade',
     shortName: 'Detailed report',
-    amountMinor: 3500,
+    amountMinor: 3400,
     currency: 'GBP',
-    display: '£35',
+    display: '£34',
     priceNote: 'additional, one-time payment',
-    description: 'A full detailed report building on your standard report: sizing method, segments, competitors, pricing, costs, cash-flow scenarios, sensitivity and a launch roadmap.',
+    description: 'A detailed report building on your assessment: market insights, market strategy, roadmap, customer journey and financial details.',
     stripePriceEnv: 'STRIPE_PRICE_ID_UPGRADE',
     requires: 'standard',
   },
@@ -90,7 +90,7 @@ export const PRODUCT_LIST: Product[] = [PRODUCTS.standard, PRODUCTS.upgrade];
 /** Combined spend when both are bought, for honest disclosure. */
 export const COMBINED_TOTAL = {
   amountMinor: PRODUCTS.standard.amountMinor + PRODUCTS.upgrade.amountMinor,
-  display: '£52',
+  display: '£51',
 };
 
 /** Convenience alias for the entry product (used in nav and CTAs). */
@@ -102,7 +102,16 @@ export const PRICE = {
   note: 'One report. One idea. One primary market. No subscription, no account.',
 };
 
-/** Sections included in the detailed report (shown to customers before purchase). */
+/** What the detailed upgrade adds, as shown in the locked preview and pricing. */
+export const UPGRADE_INCLUDES = [
+  { title: 'Market insights', body: 'Audience segments, demand evidence and competitors.' },
+  { title: 'Market strategy', body: 'Positioning, acquisition channels and pricing options.' },
+  { title: 'Roadmap', body: 'Prioritised steps and milestones.' },
+  { title: 'Customer journey', body: 'Discovery, purchase, delivery and retention.' },
+  { title: 'Financial details', body: 'Start-up cost assumptions, unit economics, break-even analysis and clearly labelled scenarios.' },
+] as const;
+
+/** Sections generated in the detailed report (nine fixed section ids in the generator). */
 export const DETAILED_REPORT_SECTIONS = [
   'Market opportunity and sizing methodology',
   'Target customer segments',
@@ -128,7 +137,7 @@ export const COMPANY = {
 };
 
 export const CONSULTATION = {
-  text: 'For detailed consultation on market research for your product, business planning, and financial feasibility, book a call with our experts by emailing support@inovantage.co.uk.',
+  text: 'For tailored market research, business planning or financial feasibility support, book a consultation with our team at support@inovantage.co.uk.',
   email: 'support@inovantage.co.uk',
   /** Build a mailto link with a non-sensitive report reference in the subject. */
   mailto(reportRef?: string): string {
@@ -137,14 +146,5 @@ export const CONSULTATION = {
   },
 };
 
-/** Scorecard rubric for the standard report. Published so scores are explainable. */
-export const SCORECARD_DIMENSIONS = [
-  { id: 'demand', label: 'Demand', rubric: 'Evidence that the target customers exist locally and want this now.' },
-  { id: 'competition', label: 'Competition', rubric: 'How crowded the space is and how entrenched the alternatives are.' },
-  { id: 'differentiation', label: 'Differentiation', rubric: 'Whether the stated reason to choose this business is visible and valued.' },
-  { id: 'financial_clarity', label: 'Financial clarity', rubric: 'How well the price, costs and break-even are known or evidenced.' },
-  { id: 'founder_fit', label: 'Founder fit', rubric: 'Budget, time and experience against what the idea needs.' },
-] as const;
-
-export const READINESS_RUBRIC =
-  'Indicative readiness score: the average of the five scorecard ratings (1 to 5) scaled to 100, computed in code. Dimensions marked “insufficient evidence” are excluded and the score is withheld if fewer than three dimensions can be rated. It is not a probability of success.';
+/** Scoring model (criteria, weights, bands): see scoring.ts. Re-exported for convenience. */
+export { CRITERIA, SCORE_DISCLAIMER, SCORE_LABEL, SCORE_RUBRIC } from './scoring';

@@ -95,7 +95,7 @@ Every line must start with `OK`.
 ## 6. Run one pilot report
 
 1. Go to `/owner/pilot`, enter the owner password. You get a two-hour session.
-2. Click **Start a pilot report**. The real six-step questionnaire opens with
+2. Click **Start a pilot report**. The real eight-question questionnaire opens with
    `support@metaphorconsultants.com` pre-filled as the delivery address.
    Use a recognisable working name such as `Pilot 1 — mobile dog grooming`.
    The form is eight questions over three screens.

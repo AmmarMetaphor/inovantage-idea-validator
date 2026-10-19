@@ -44,7 +44,7 @@ export class FakeGateway implements PaymentGateway {
   priceMismatch = false;
 
   /** Amounts "Stripe" knows for each configured price. */
-  prices: Record<string, { amountMinor: number; currency: string }> = { [PRICE_ID]: { amountMinor: 1700, currency: 'gbp' }, [PRICE_ID_UPGRADE]: { amountMinor: 3500, currency: 'gbp' } };
+  prices: Record<string, { amountMinor: number; currency: string }> = { [PRICE_ID]: { amountMinor: 1700, currency: 'gbp' }, [PRICE_ID_UPGRADE]: { amountMinor: 3400, currency: 'gbp' } };
   async verifyPrice(priceId: string, expected: { amountMinor: number; currency: string }) {
     const p = this.prices[priceId];
     if (this.priceMismatch || !p || p.amountMinor !== expected.amountMinor || p.currency !== expected.currency.toLowerCase()) {
@@ -142,15 +142,15 @@ export function validAnswers(email = 'founder@example.com') {
     country: 'UK',
     regionCity: 'Leeds',
     currency: 'GBP',
-    targetCustomer: 'Dog owners in north Leeds with medium/large breeds who want calm handling at home.',
+    targetCustomer: 'Dog owners in north Leeds with medium/large breeds who find salon visits stressful.',
+    differentiation: 'Calm one-to-one handling at home; local groomers are salon-based.',
     revenueModel: 'one-off',
     priceEstimate: { value: '45', unknown: false },
     budget: { value: '8000', unknown: false },
     hoursPerWeek: '20-35',
     experience: 'some',
     stage: 'idea',
-    validation: ['conversations'],
-    evidenceDetail: 'Spoke to 12 owners at the park.',
+    progressNote: 'Spoke to 12 owners at the park.',
     email,
     ackScope: true,
     ackTerms: true,

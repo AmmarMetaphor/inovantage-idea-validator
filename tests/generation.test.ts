@@ -41,9 +41,9 @@ describe('Generation schema compactness (the grammar the API compiles)', () => {
     });
   }
 
-  it('the whole standard report needs ≤ 45 properties across all parts, none shared', () => {
+  it('the whole standard report needs ≤ 48 properties across three parts, none shared', () => {
     const total = ['standard.verdict', 'standard.finance', 'standard.action'].reduce((n, k) => n + schemaStats(k, GENERATION_SCHEMAS[k as keyof typeof GENERATION_SCHEMAS]).result.properties, 0);
-    expect(total).toBeLessThanOrEqual(45);
+    expect(total).toBeLessThanOrEqual(48);
   });
 
   it('the application model is never what is sent', () => {
@@ -68,7 +68,7 @@ function captureClient() {
   return { bodies, gen: new AnthropicGenerator('sk-ant-test-placeholder', 'claude-opus-5-5', { fetch, maxRetries: 0 }) };
 }
 
-const brief = buildBrief({ orderRef: 'TEST', market: 'UK', currency: 'GBP', ideaName: 'Test', answers: validAnswers(), answersVersion: 2 });
+const brief = buildBrief({ orderRef: 'TEST', market: 'UK', currency: 'GBP', ideaName: 'Test', answers: validAnswers(), answersVersion: 3 });
 
 describe('The exact compose requests', () => {
   it('standard: three parallel requests, no tools, one small format each, shared context cached', async () => {
@@ -110,9 +110,11 @@ function parts(over: { verdict?: Partial<StandardParts['verdict']>; finance?: Pa
     verdict: GENERATION_SCHEMAS['standard.verdict'].parse({
       title: 'Mobile dog grooming in Manchester', idea_summary: 'Van-based grooming for busy owners.',
       verdict: 'Worth testing', verdict_explanation: 'Demand indicators exist locally.',
-      scores: [4, 3, 0, 2, 5], score_notes: ['Strong', 'Crowded', '', 'Costs unknown', 'Experienced'],
+      scores: [74, 0, 58, 52, 68, 71, 63, 47, 55],
+      score_basis: ['evidence', 'insufficient', 'assumption', 'assumption', 'evidence', 'assumption', 'assumption', 'assumption', 'assumption'],
+      score_notes: ['Strong', '', 'Van needed', 'Two rivals', 'Real problem', 'Hire a van', 'Clear benefit', 'Tight', 'Fits'],
+      score_improvements: ['Pick postcodes', 'Check trends', 'Get quotes', 'Position on calm', 'Quantify', 'Run 20 grooms', 'Test price', 'Set radius', 'Plan training'],
       strengths: ['Mobile', 'Experienced', 'Low fixed costs', 'Fourth item dropped'], weaknesses: ['One van'], opportunities: [], threats: ['Incumbents'],
-      limitations: [],
       ...claims,
       claim_texts: ['Ownership is rising', 'Everyone wants this', 'Fuel is about £300 a month'],
       claim_kinds: ['evidence', 'evidence', 'guess'], claim_confidences: ['high', 'high', 'maybe'], claim_source_ids: [[1], [9], []],
@@ -129,7 +131,8 @@ function parts(over: { verdict?: Partial<StandardParts['verdict']>; finance?: Pa
     }),
     action: GENERATION_SCHEMAS['standard.action'].parse({
       risks: ['Van breakdown', 'Seasonal demand', 'Pricing too low', 'Fourth risk dropped'], risk_validations: ['Quote breakdown cover', 'Check winter bookings'],
-      improvements: ['Pre-book deposits', 'Bundle services'],
+      improvements: ['Pre-book deposits', 'Bundle services'], improvement_purposes: ['Cash before spend'], improvement_measures: ['Ten deposits'],
+      limitations: [],
       experiment_description: 'Run 20 paid grooms', experiment_budget: 150, experiment_duration: '4 weeks', experiment_success: '10 repeat bookings',
       source_ids_used: [1, 9, 1], source_uses: ['ownership', 'invented', 'duplicate'],
       ...claims,
@@ -142,8 +145,12 @@ describe('Mapping part outputs to the application model', () => {
   it('produces a valid StandardReport with unknowns kept explicit', () => {
     const { report, diagnostics } = mapStandardParts(parts(), research, ['Monthly fixed costs']);
     expect(StandardReportSchema.safeParse(report).success).toBe(true);
-    expect(report.scorecard.map((s) => s.score)).toEqual([4, 3, null, 2, 5]);
-    expect(report.scorecard[2].note).toMatch(/Insufficient evidence/);
+    expect(report.scorecard.map((s) => s.score)).toEqual([74, null, 58, 52, 68, 71, 63, 47, 55]);
+    expect(report.scorecard[1]).toMatchObject({ basis: 'insufficient', score: null });
+    expect(report.scorecard[1].note).toMatch(/Not enough evidence/);
+    expect(report.scorecard[0]).toMatchObject({ basis: 'evidence', improvement: 'Pick postcodes' });
+    expect(report.improvements[0]).toEqual({ action: 'Pre-book deposits', purpose: 'Cash before spend', measure: 'Ten deposits' });
+    expect(report.improvements[1]).toMatchObject({ action: 'Bundle services', purpose: '', measure: '' });
     expect(report.financial_inputs.fixed_monthly.value).toBeNull(); // never an invented zero
     expect(report.financial_inputs.price).toMatchObject({ value: 40, unit: 'sale', basis: 'customer_input' });
     expect(report.financial_inputs.volumes).toMatchObject({ low: 20, base: 50, high: 90, basis: 'assumption' });
@@ -184,6 +191,12 @@ describe('Mapping part outputs to the application model', () => {
     expect(report.risks).toHaveLength(3);
     expect(report.risks[2].validation_method).toBeTruthy();
     expect(diagnostics.truncated).toContain('title');
+  });
+
+  it('a score without a basis is kept as an assumption; a score with "insufficient" is dropped, never zero', () => {
+    const { report } = mapStandardParts(parts({ verdict: { scores: [0, 90, 50, 50, 50, 50, 50, 50, 50], score_basis: ['insufficient', '', 'evidence', 'evidence', 'evidence', 'evidence', 'evidence', 'evidence', 'evidence'] } }), research, []);
+    expect(report.scorecard[0]).toMatchObject({ score: null, basis: 'insufficient' });
+    expect(report.scorecard[1]).toMatchObject({ score: 90, basis: 'assumption' });
   });
 
   it('an unrecognised verdict label is normalised and recorded', () => {

@@ -96,7 +96,7 @@ try {
         return json({
           reportRef: 'E2E00001', ideaName: 'E2E idea', orderedAt: new Date().toISOString(), expiresAt: null, emailMasked: 'su*****@metaphorconsultants.com', isPilot: true,
           standard: { stage: 'queued_for_research', label: 'Queued for research', pdfAvailable: false, emailSent: false, confirmationEmailSent: true, verdict: null, job: { state: 'queued', attempts: 0, nextRetryAt: null } },
-          detailed: null, upgrade: { price: '£35', priceNote: 'additional, one-time payment', available: true },
+          detailed: null, upgrade: { price: '£34', priceNote: 'additional, one-time payment', available: true },
         });
       }
       default:
@@ -110,21 +110,27 @@ try {
   await page.waitForURL('**/validate/1');
 
   await page.fill('#ideaDescription', 'E2E idea: van-based grooming at home for dog owners in north Leeds.');
+  await page.fill('#targetCustomer', 'Dog owners who want calm handling at home.');
   await page.fill('#industry', 'Personal services (beauty, childcare, pets…)');
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.waitForSelector('#country-UK');
   await page.check('#country-UK');
   await page.fill('#regionCity', 'Leeds');
-  await page.getByRole('button', { name: 'Continue' }).click();
-  await page.waitForSelector('#targetCustomer');
-  await page.fill('#targetCustomer', 'Dog owners who want calm handling at home.');
   await page.selectOption('#revenueModel', 'one-off');
   await page.fill('#priceEstimate', '45');
+  // Go back and forward: the answers must survive.
+  await page.getByRole('button', { name: 'Back' }).click();
+  await page.waitForSelector('#ideaDescription');
+  if (!(await page.inputValue('#ideaDescription')).startsWith('E2E idea')) fail('answers were lost on Back');
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.waitForSelector('#country-UK');
+  if ((await page.inputValue('#regionCity')) !== 'Leeds') fail('step 2 answers were lost on Back/Continue');
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.waitForSelector('#budget');
   await page.fill('#budget', '8000');
   await page.selectOption('#hoursPerWeek', '20-35');
   await page.selectOption('#experience', 'some');
-  await page.getByRole('button', { name: 'Continue' }).click();
-  await page.waitForSelector('#stage');
-  await page.selectOption('#stage', 'idea');
-  await page.check('#validation-conversations');
+  await page.check('#stage-idea');
   const prefilled = await page.inputValue('#email');
   if (prefilled !== 'support@metaphorconsultants.com') fail(`pilot email not pre-filled (got "${prefilled}")`);
   await page.check('#ackScope');
@@ -164,21 +170,20 @@ try {
   await page.getByRole('button', { name: 'Start a pilot report' }).click();
   await page.waitForURL('**/validate/1');
   await page.fill('#ideaDescription', 'Second run.');
+  await page.fill('#targetCustomer', 'Falconers.');
   await page.fill('#industry', 'Falconry');
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.waitForSelector('#country-UK');
   await page.check('#country-UK');
   await page.fill('#regionCity', 'York');
-  await page.getByRole('button', { name: 'Continue' }).click();
-  await page.waitForSelector('#targetCustomer');
-  await page.fill('#targetCustomer', 'Falconers.');
   await page.selectOption('#revenueModel', 'one-off');
   await page.check('#priceEstimate-unknown');
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.waitForSelector('#budget');
   await page.check('#budget-unknown');
   await page.selectOption('#hoursPerWeek', 'lt5');
   await page.selectOption('#experience', 'none');
-  await page.getByRole('button', { name: 'Continue' }).click();
-  await page.waitForSelector('#stage');
-  await page.selectOption('#stage', 'idea');
-  await page.check('#validation-none');
+  await page.check('#stage-idea');
   await page.check('#ackScope');
   await page.check('#ackTerms');
   await page.getByRole('button', { name: 'Review my answers' }).click();

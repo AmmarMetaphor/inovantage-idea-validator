@@ -14,7 +14,7 @@ const fakeFetch: typeof fetch = async (input, init) => {
 };
 
 const gen = new AnthropicGenerator('sk-ant-placeholder', 'claude-opus-5-5', { fetch: fakeFetch, maxRetries: 0 });
-const brief = buildBrief({ orderRef: 'CAPTURE', market: 'UK', currency: 'GBP', ideaName: 'Capture', answers: validAnswers(), answersVersion: 2 });
+const brief = buildBrief({ orderRef: 'CAPTURE', market: 'UK', currency: 'GBP', ideaName: 'Capture', answers: validAnswers(), answersVersion: 3 });
 for (const [name, run] of [
   ['compose_standard', () => gen.composeStandard(brief, [], '', { tighten: 0 })],
   ['compose_detailed', () => gen.composeDetailed(brief, [], '', null)],

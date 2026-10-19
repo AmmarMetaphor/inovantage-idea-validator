@@ -27,8 +27,24 @@ describe('Eight-question questionnaire', () => {
   });
 
   it('rejects missing required questions with field-level errors', () => {
-    const r = validateSubmission({ ...validAnswers(), ideaDescription: '', regionCity: '', validation: [] });
+    const r = validateSubmission({ ...validAnswers(), ideaDescription: '', targetCustomer: '', stage: '' });
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(Object.keys(r.errors).sort()).toEqual(['ideaDescription', 'regionCity', 'validation']);
+    if (!r.ok) expect(Object.keys(r.errors).sort()).toEqual(['ideaDescription', 'stage', 'targetCustomer']);
+  });
+
+  it('keeps optional answers optional: city, differentiation, price and progress note may be blank', () => {
+    const r = validateSubmission({ ...validAnswers(), regionCity: '', differentiation: '', priceEstimate: { value: '', unknown: false }, progressNote: '' });
+    expect(r.ok).toBe(true);
+    const required = STEPS.flatMap((s) => s.fields).filter((f) => f.required).map((f) => f.id);
+    expect(required).toEqual(['ideaDescription', 'targetCustomer', 'industry', 'country', 'revenueModel', 'budget', 'hoursPerWeek', 'experience', 'stage', 'email', 'ackScope', 'ackTerms']);
+  });
+
+  it('still builds a brief for a version-2 submission', async () => {
+    const { buildBrief } = await import('../netlify/lib/research');
+    const v2 = { ...validAnswers(), stage: 'trading-new', validation: ['conversations'], evidenceDetail: 'Spoke to 12 owners.' };
+    const brief = buildBrief({ orderRef: 'V2', market: 'UK', currency: 'GBP', ideaName: 'V2', answers: v2, answersVersion: 2 });
+    expect(brief.existingBusiness).toBe(true);
+    expect(brief.lines.some((l) => l.startsWith('Validation already attempted'))).toBe(true);
+    expect(brief.lines.some((l) => l.startsWith('What makes your approach different'))).toBe(false);
   });
 });

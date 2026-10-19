@@ -70,14 +70,17 @@ export const StandardVerdictPart = z.object({
   idea_summary: z.string(),
   verdict: z.string(),
   verdict_explanation: z.string(),
-  /** Five numbers in SCORECARD_IDS order; 1–5, or 0 = insufficient evidence. */
+  /** Nine integers 0–100 in SCORECARD_IDS order (ignored where score_basis is "insufficient"). */
   scores: z.array(z.number()),
+  /** evidence | assumption | insufficient, per criterion. */
+  score_basis: z.array(z.string()),
   score_notes: z.array(z.string()),
+  /** One way to strengthen each criterion, same order. */
+  score_improvements: z.array(z.string()),
   strengths: z.array(z.string()),
   weaknesses: z.array(z.string()),
   opportunities: z.array(z.string()),
   threats: z.array(z.string()),
-  limitations: z.array(z.string()),
   ...CLAIM_FIELDS,
 });
 
@@ -98,7 +101,10 @@ export const StandardFinancePart = z.object({
 export const StandardActionPart = z.object({
   risks: z.array(z.string()),
   risk_validations: z.array(z.string()),
+  /** Prioritised recommendations as parallel arrays: action, why it matters, how to measure. */
   improvements: z.array(z.string()),
+  improvement_purposes: z.array(z.string()),
+  improvement_measures: z.array(z.string()),
   experiment_description: z.string(),
   experiment_budget: z.number(),
   experiment_duration: z.string(),
@@ -106,6 +112,7 @@ export const StandardActionPart = z.object({
   /** Research source ids the report relies on, with what each was used for. */
   source_ids_used: z.array(z.number()),
   source_uses: z.array(z.string()),
+  limitations: z.array(z.string()),
   ...CLAIM_FIELDS,
 });
 
@@ -324,11 +331,19 @@ export function mapStandardParts(parts: StandardParts, research: ResearchSource[
   a.source_ids_used.forEach((id, i) => table.cite(id, a.source_uses[i] ?? ''));
 
   const scorecard = SCORECARD_IDS.map((id, i) => {
+    const basisRaw = (v.score_basis[i] ?? '').trim().toLowerCase();
     const raw = v.scores[i];
-    const score = Number.isInteger(raw) && raw >= 1 && raw <= 5 ? raw : null;
-    if (raw !== undefined && score === null && raw !== 0) d.normalised.push(`score[${i}]:${raw}`);
-    const note = clip(v.score_notes[i], 130, `score_notes[${i}]`, d);
-    return { id, score, note: note || (score === null ? 'Insufficient evidence to rate.' : 'No note provided.') };
+    let basis: 'evidence' | 'assumption' | 'insufficient' = basisRaw === 'evidence' ? 'evidence' : basisRaw === 'assumption' ? 'assumption' : 'insufficient';
+    if (basisRaw && basis === 'insufficient' && !/insufficient|not enough|unknown|none/.test(basisRaw)) d.normalised.push(`score_basis[${i}]:${v.score_basis[i]}`);
+    if (!basisRaw && typeof raw === 'number' && Number.isFinite(raw)) basis = 'assumption';
+    // A score is only kept when a basis supports it; anything else is "not enough evidence", never zero.
+    const score = basis !== 'insufficient' && typeof raw === 'number' && Number.isFinite(raw) ? Math.round(Math.min(100, Math.max(0, raw))) : null;
+    if (score === null && basis !== 'insufficient') {
+      basis = 'insufficient';
+      d.normalised.push(`score[${i}]:${String(raw)}`);
+    }
+    const note = clip(v.score_notes[i], 150, `score_notes[${i}]`, d);
+    return { id, score, basis, note: note || (score === null ? 'Not enough evidence to rate this criterion.' : 'No reason was given.'), improvement: clip(v.score_improvements[i], 150, `score_improvements[${i}]`, d) };
   });
 
   const kindRaw = f.chart_kind.trim().toLowerCase();
@@ -349,15 +364,19 @@ export function mapStandardParts(parts: StandardParts, research: ResearchSource[
     .slice(0, 3)
     .map((r, i) => ({ risk: clip(r.risk, 110, `risks[${i}]`, d), validation_method: clip(r.validation_method || 'Validate directly with potential customers.', 130, `risk_validations[${i}]`, d) }));
 
-  const limitations = clipList(v.limitations, 4, 130, 'limitations', d);
+  const limitations = clipList(a.limitations, 4, 130, 'limitations', d);
   for (const u of unknowns) if (limitations.length < 4 && !limitations.some((l) => l.toLowerCase().includes(u.toLowerCase().slice(0, 12)))) limitations.push(clip(`Not provided by the customer: ${u}.`, 130, 'limitations.unknown', d));
   if (limitations.length === 0) limitations.push(research.length ? 'Local figures were limited; some statements rest on assumptions.' : 'No retrievable sources were found; statements rest on assumptions and customer inputs.');
 
   const claims = [...mapClaims(v, 'verdict', table, d), ...mapClaims(f, 'financials', table, d), ...mapClaims(a, 'risks_actions', table, d)].slice(0, 30);
 
-  const improvements = clipList(a.improvements, 5, 150, 'improvements', d);
+  const improvements = a.improvements
+    .map((action, i) => ({ action, purpose: a.improvement_purposes[i] ?? '', measure: a.improvement_measures[i] ?? '' }))
+    .filter((r) => r.action && r.action.trim())
+    .slice(0, 5)
+    .map((r, i) => ({ action: clip(r.action, 150, `improvements[${i}]`, d), purpose: clip(r.purpose, 140, `improvement_purposes[${i}]`, d), measure: clip(r.measure, 140, `improvement_measures[${i}]`, d) }));
   while (improvements.length < 3) {
-    improvements.push('Validate the next most uncertain assumption with real customers before spending.');
+    improvements.push({ action: 'Validate the next most uncertain assumption with real customers before spending.', purpose: 'Reduces the risk of building on a guess.', measure: 'Suggested: ten conversations that confirm or change the assumption.' });
     d.normalised.push('improvements:padded');
   }
 

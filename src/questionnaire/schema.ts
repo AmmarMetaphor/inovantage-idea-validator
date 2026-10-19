@@ -1,15 +1,18 @@
 import { MARKETS } from '../config/product';
-import { asArray, asString } from './helpers';
+import { asString } from './helpers';
 import type { Answers, Field, Step } from './types';
 
 /*
-  Version 2 questionnaire: eight numbered questions over three short screens.
-  Fields sharing a `question` number render as one compact question. Nothing
-  here is compulsory beyond the eight questions; uncertainty is allowed with
-  "Not sure" options and is reported as a gap in the report.
+  Version 3 questionnaire: eight numbered questions over three short screens.
+  Fields sharing a `question` number render as one compact question. Required
+  answers are kept to the minimum the research needs; uncertainty is allowed
+  ("Not sure yet") and is reported as a gap, never blocked.
+
+  schema-v2.ts and schema-v1.ts keep the earlier shapes so reports for
+  existing submissions can still be built.
 */
 
-export const ANSWERS_VERSION = 2;
+export const ANSWERS_VERSION = 3;
 
 export const INDUSTRIES = [
   { value: 'food-drink', label: 'Food and drink' },
@@ -32,10 +35,8 @@ export const INDUSTRIES = [
 
 export const STAGES = [
   { value: 'idea', label: 'Just an idea' },
-  { value: 'planning', label: 'Researching and planning' },
-  { value: 'building', label: 'Building before launch' },
-  { value: 'trading-new', label: 'Recently launched (under 12 months)' },
-  { value: 'trading-established', label: 'Existing business adding this' },
+  { value: 'preparing', label: 'Preparing to launch' },
+  { value: 'trading', label: 'Already trading' },
 ];
 
 export const REVENUE_MODELS = [
@@ -64,41 +65,44 @@ export const EXPERIENCE = [
   { value: 'ran-business', label: 'I have run a business before' },
 ];
 
-export const VALIDATION = [
-  { value: 'none', label: 'Nothing yet' },
-  { value: 'conversations', label: 'Talked to potential customers' },
-  { value: 'survey', label: 'Survey or research responses' },
-  { value: 'waitlist', label: 'Waiting list or sign-ups' },
-  { value: 'preorders', label: 'Pre-orders or deposits' },
-  { value: 'paying', label: 'Paying customers already' },
-  { value: 'pilot', label: 'Pilot, trial or test sales' },
-];
-
 export const STEPS: Step[] = [
   {
     id: 'idea',
-    shortTitle: 'Idea',
-    title: 'Your idea',
+    shortTitle: 'Your idea',
+    title: 'Tell us about your idea',
     intro: 'Three short questions. Plain language is fine; specifics beat polish.',
     fields: [
       {
         id: 'ideaDescription',
         type: 'textarea',
-        label: 'What is your business idea, and what problem does it solve?',
-        help: 'What you would sell, to whom, and the pain or need it meets. Two to five sentences.',
+        label: 'What is your business idea?',
+        help: 'What you would sell and how it works. Two to five sentences is plenty.',
+        placeholder: 'e.g. A mobile dog-grooming van that visits owners at home in north Leeds.',
         required: true,
         maxLength: 1200,
-        rows: 5,
+        rows: 4,
         question: 1,
-        questionTitle: 'Your business idea and the problem it solves',
+        questionTitle: 'Your business idea',
       },
       {
         id: 'ideaName',
         type: 'text',
-        label: 'Working name (optional)',
+        label: 'Working name',
         maxLength: 80,
         placeholder: 'e.g. Northside Mobile Dog Grooming',
         question: 1,
+      },
+      {
+        id: 'targetCustomer',
+        type: 'textarea',
+        label: 'Who would buy it, and what problem does it solve?',
+        help: 'Describe a typical buyer and the pain or need you meet for them.',
+        placeholder: 'e.g. Owners of anxious or large dogs who find salon visits stressful and time-consuming.',
+        required: true,
+        maxLength: 1000,
+        rows: 4,
+        question: 2,
+        questionTitle: 'Who it is for and the problem it solves',
       },
       {
         id: 'industry',
@@ -109,79 +113,85 @@ export const STEPS: Step[] = [
         options: INDUSTRIES,
         placeholder: 'Search or type an industry',
         maxLength: 80,
-        question: 2,
-        questionTitle: 'Industry',
+        question: 3,
+        questionTitle: 'Which industry best describes it?',
       },
+    ],
+  },
+  {
+    id: 'market',
+    shortTitle: 'Market and money',
+    title: 'Where, how, and why you',
+    intro: 'Rough answers are fine. “Not sure yet” is a valid answer and the report will say what was assumed.',
+    fields: [
       {
         id: 'country',
         type: 'radio',
         label: 'Country',
         required: true,
         options: MARKETS.map((m) => ({ value: m.code, label: m.label })),
-        question: 3,
-        questionTitle: 'Where will you operate?',
-        questionHelp: 'One report covers one primary market.',
+        question: 4,
+        questionTitle: 'Where will you launch?',
+        questionHelp: 'One report covers one primary market. A city or region makes the research more local.',
       },
       {
         id: 'regionCity',
         type: 'text',
         label: 'City or region',
-        required: true,
         maxLength: 120,
         placeholder: 'e.g. Leeds',
-        question: 3,
-      },
-    ],
-  },
-  {
-    id: 'customers',
-    shortTitle: 'Customers',
-    title: 'Customers and money',
-    intro: 'Rough answers are fine. “Not sure” is a valid answer and the report will say what was assumed.',
-    fields: [
-      {
-        id: 'targetCustomer',
-        type: 'textarea',
-        label: 'Who is your target customer, and why would they choose you over alternatives?',
-        help: 'Describe a typical buyer and your reason to be chosen: price, speed, quality, convenience, specialism…',
-        required: true,
-        maxLength: 1000,
-        rows: 5,
         question: 4,
-        questionTitle: 'Target customer and your reason to be chosen',
+      },
+      {
+        id: 'differentiation',
+        type: 'textarea',
+        label: 'What makes your approach different?',
+        help: 'Price, speed, quality, convenience, specialism, access to customers… Leave blank or write “Not sure yet” if you have not decided.',
+        placeholder: 'e.g. Calm one-to-one handling at home; most local groomers are salon-based.',
+        maxLength: 600,
+        rows: 3,
+        question: 5,
+        questionTitle: 'What makes your approach different?',
       },
       {
         id: 'revenueModel',
         type: 'select',
-        label: 'How will you charge?',
+        label: 'How would you earn money?',
         required: true,
         options: REVENUE_MODELS,
         placeholder: 'Choose one',
-        question: 5,
-        questionTitle: 'Revenue model and expected selling price',
+        question: 6,
+        questionTitle: 'How would you earn money?',
       },
       {
         id: 'priceEstimate',
         type: 'estimate',
         unit: 'currency',
-        label: 'Expected price per sale',
+        label: 'Intended price per sale',
         help: 'What one customer would pay for one purchase, subscription month, or project.',
-        required: true,
-        unknownLabel: 'Not sure',
+        unknownLabel: 'Not sure yet',
         min: 0,
-        question: 5,
+        question: 6,
       },
+    ],
+  },
+  {
+    id: 'resources',
+    shortTitle: 'You and delivery',
+    title: 'What you have to start with',
+    intro: 'Last two questions: your resources, and where to send the report.',
+    fields: [
       {
         id: 'budget',
         type: 'estimate',
         unit: 'currency',
         label: 'Budget you could invest',
         required: true,
-        unknownLabel: 'Not sure',
+        unknownLabel: 'Not sure yet',
         min: 0,
-        question: 6,
-        questionTitle: 'Founder resources',
-        questionHelp: 'Budget, time and experience, so the report can judge fit.',
+        question: 7,
+        questionTitle: 'What do you have to start with?',
+        questionHelp: 'Budget, time and experience, so the report can judge fit. Nothing here is a test.',
       },
       {
         id: 'hoursPerWeek',
@@ -190,7 +200,7 @@ export const STEPS: Step[] = [
         required: true,
         options: HOURS,
         placeholder: 'Choose a range',
-        question: 6,
+        question: 7,
       },
       {
         id: 'experience',
@@ -199,46 +209,25 @@ export const STEPS: Step[] = [
         required: true,
         options: EXPERIENCE,
         placeholder: 'Choose one',
-        question: 6,
+        question: 7,
       },
-    ],
-  },
-  {
-    id: 'progress',
-    shortTitle: 'Delivery',
-    title: 'Progress and delivery',
-    intro: 'Last two questions: where you are, and where to send the report.',
-    fields: [
       {
         id: 'stage',
-        type: 'select',
-        label: 'Current stage',
+        type: 'radio',
+        label: 'Where are you now?',
         required: true,
         options: STAGES,
-        placeholder: 'Choose one',
-        question: 7,
-        questionTitle: 'Current stage and validation so far',
-      },
-      {
-        id: 'validation',
-        type: 'checkbox-group',
-        label: 'Validation already attempted',
-        required: true,
-        options: VALIDATION,
         question: 7,
       },
       {
-        id: 'evidenceDetail',
+        id: 'progressNote',
         type: 'textarea',
-        label: 'Evidence so far (optional)',
-        help: 'Numbers, dates, what people actually said or did.',
+        label: 'Progress so far',
+        help: 'Anything you have already done or learned: conversations, sign-ups, sales, quotes, qualifications.',
+        placeholder: 'e.g. Spoke to 12 owners at the park; 5 said they would book.',
         maxLength: 600,
         rows: 3,
         question: 7,
-        showIf: (a) => {
-          const v = asArray(a.validation);
-          return v.length > 0 && !(v.length === 1 && v[0] === 'none');
-        },
       },
       {
         id: 'email',
@@ -248,7 +237,7 @@ export const STEPS: Step[] = [
         required: true,
         placeholder: 'you@example.com',
         question: 8,
-        questionTitle: 'Where should we send the report?',
+        questionTitle: 'Where should we email your report?',
       },
       {
         id: 'ackScope',
@@ -300,6 +289,7 @@ export function groupByQuestion(fields: Field[]): { number: number | null; title
   return groups;
 }
 
-export function isExistingBusinessV2(answers: Answers): boolean {
-  return ['trading-new', 'trading-established'].includes(asString(answers.stage));
+/** Whether the customer already trades (any schema version). */
+export function isExistingBusinessV3(answers: Answers): boolean {
+  return ['trading', 'trading-new', 'trading-established'].includes(asString(answers.stage));
 }

@@ -94,14 +94,3 @@ export function computeFinancials(input: FinancialInputs): FinancialResult {
 export function formatMoney(n: number, currency: string): string {
   return fmt(n, currency);
 }
-
-/**
- * Indicative readiness score from scorecard ratings (1–5 or null for
- * insufficient evidence). Withheld when fewer than three dimensions are rated.
- */
-export function readinessScore(ratings: (number | null)[]): { score: number | null; rated: number } {
-  const rated = ratings.filter((r): r is number => typeof r === 'number' && r >= 1 && r <= 5);
-  if (rated.length < 3) return { score: null, rated: rated.length };
-  const avg = rated.reduce((a, b) => a + b, 0) / rated.length;
-  return { score: Math.round(((avg - 1) / 4) * 100), rated: rated.length };
-}

@@ -205,7 +205,8 @@ async function briefFor(deps: JobDeps, order: Order, ref: string) {
   const sub = await deps.db.getSubmission(order.submission_id);
   if (!sub) throw new NonRetryableGenerationError('submission missing');
   const answers = sub.answers as Answers;
-  const version = (sub as { answers_version?: number }).answers_version ?? (answers.ideaDescription !== undefined ? 2 : 1);
+  // Older rows may predate the column; infer from the fields present.
+  const version = sub.answers_version ?? (answers.validation !== undefined || answers.evidenceDetail !== undefined ? 2 : answers.ideaDescription !== undefined ? 3 : 1);
   return { sub, brief: buildBrief({ orderRef: ref, market: sub.market, currency: sub.currency, ideaName: sub.idea_name, answers, answersVersion: version }) };
 }
 
@@ -278,7 +279,7 @@ async function runStage(deps: JobDeps, ctx: StageCtx): Promise<Json> {
       const report = await db.upsertReport(order.id, {
         status: 'generated',
         tier,
-        schema_version: 2,
+        schema_version: 3,
         content,
         verdict,
         model,

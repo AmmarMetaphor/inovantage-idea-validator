@@ -71,7 +71,7 @@ function Header() {
             ))}
             <li className="site-nav__cta">
               <Link to="/validate" className="btn btn--primary btn--md">
-                Validate my idea · {PRICE.display}
+                Explore my idea · {PRICE.display}
               </Link>
             </li>
           </ul>

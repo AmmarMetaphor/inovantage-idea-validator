@@ -36,3 +36,5 @@ screenshots/
 
 # Rendered PDF samples
 samples-out/
+screenshots-out/
+dist-screens/

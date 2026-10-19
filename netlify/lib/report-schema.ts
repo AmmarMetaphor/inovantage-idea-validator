@@ -7,11 +7,13 @@
   generation-schema.ts, which are mapped into this model explicitly.
 */
 import { z } from 'zod';
+import { CRITERION_IDS } from '../../src/config/scoring';
 
 export const VERDICTS = ['Worth testing', 'Refine before investing', 'Reconsider the current approach'] as const;
 export type VerdictLabel = (typeof VERDICTS)[number];
 
-export const SCORECARD_IDS = ['demand', 'competition', 'differentiation', 'financial_clarity', 'founder_fit'] as const;
+/** Nine criteria in two groups (src/config/scoring.ts); higher is always more favourable. */
+export const SCORECARD_IDS = CRITERION_IDS;
 
 const Basis = z.enum(['customer_input', 'assumption', 'evidence']);
 
@@ -43,10 +45,23 @@ export const ClaimSchema = z.object({
 
 export const ScorecardItemSchema = z.object({
   id: z.enum(SCORECARD_IDS),
-  /** 1 (weak) to 5 (strong), or null when evidence is insufficient. */
-  score: z.number().int().min(1).max(5).nullable(),
-  /** ≤ 18 words. */
-  note: z.string().min(1).max(130),
+  /** 0 (weak) to 100 (strong), or null when evidence is insufficient (never treated as zero). */
+  score: z.number().int().min(0).max(100).nullable(),
+  /** What the score rests on; 'insufficient' always pairs with score null. */
+  basis: z.enum(['evidence', 'assumption', 'insufficient']),
+  /** Brief reason, ≤ 22 words. */
+  note: z.string().min(1).max(150),
+  /** One practical way to strengthen this criterion, ≤ 22 words. */
+  improvement: z.string().max(150),
+});
+
+export const ImprovementSchema = z.object({
+  /** The action, ≤ 22 words. */
+  action: z.string().min(1).max(150),
+  /** Why it matters, ≤ 20 words. */
+  purpose: z.string().max(140),
+  /** A practical success measure (a suggestion, not a guarantee), ≤ 20 words. */
+  measure: z.string().max(140),
 });
 
 export const ChartSchema = z.object({
@@ -70,7 +85,7 @@ export const StandardReportSchema = z.object({
     /** ≤ 85 words, evidence-based, plain English. */
     explanation: z.string().min(1).max(600),
   }),
-  scorecard: z.array(ScorecardItemSchema).length(5),
+  scorecard: z.array(ScorecardItemSchema).length(9),
   chart: ChartSchema,
   swot: z.object({ strengths: ShortList(3), weaknesses: ShortList(3), opportunities: ShortList(3), threats: ShortList(3) }),
   financial_inputs: z.object({
@@ -81,8 +96,8 @@ export const StandardReportSchema = z.object({
   }),
   /** Up to three risks; the generator is asked for exactly three. */
   risks: z.array(z.object({ risk: z.string().min(1).max(110), validation_method: z.string().min(1).max(130) })).min(1).max(3),
-  /** Three to five specific, prioritised improvements, ≤ 22 words each. */
-  improvements: z.array(z.string().min(1).max(150)).min(3).max(5),
+  /** Three to five prioritised recommendations, each with action, purpose and measure. */
+  improvements: z.array(ImprovementSchema).min(3).max(5),
   experiment: z.object({
     description: z.string().min(1).max(220),
     budget_amount: z.number().min(0),

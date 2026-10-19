@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeFinancials, readinessScore } from '../netlify/lib/finance';
+import { computeFinancials } from '../netlify/lib/finance';
 
 const base = {
   currency: 'GBP',
@@ -35,14 +35,5 @@ describe('Financial scenarios', () => {
     expect(r.missing).toEqual(['selling price']);
     expect(r.breakEvenUnits).toBeNull();
     expect(r.assumptions[0].value).toBe('not provided');
-  });
-});
-
-describe('Indicative readiness score', () => {
-  it('averages rated dimensions and withholds the score below three ratings', () => {
-    expect(readinessScore([5, 5, 5, 5, 5]).score).toBe(100);
-    expect(readinessScore([1, 1, 1, 1, 1]).score).toBe(0);
-    expect(readinessScore([3, null, 4, null, 2])).toEqual({ score: 50, rated: 3 });
-    expect(readinessScore([3, null, 4, null, null])).toEqual({ score: null, rated: 2 });
   });
 });

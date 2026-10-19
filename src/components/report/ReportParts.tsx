@@ -1,25 +1,8 @@
 import { useId, useState } from 'react';
-import { CONSULTATION, DETAILED_REPORT_SECTIONS, PRODUCTS, READINESS_RUBRIC, SCORECARD_DIMENSIONS } from '@/config/product';
+import { CONSULTATION, PRODUCTS, UPGRADE_INCLUDES } from '@/config/product';
 import type { FinancialResult } from '@/lib/api';
-import type { Claim, Source, StandardReport, VerdictLabel } from './types';
-
-const TONE: Record<VerdictLabel, 'go' | 'caution' | 'stop'> = {
-  'Worth testing': 'go',
-  'Refine before investing': 'caution',
-  'Reconsider the current approach': 'stop',
-};
-
-export function scoreLabel(score: number | null): string {
-  if (score === null) return 'Insufficient evidence';
-  return ['', 'Weak', 'Limited', 'Moderate', 'Good', 'Strong'][score] ?? '';
-}
-
-export function readiness(scores: (number | null)[]): { score: number | null; rated: number } {
-  const rated = scores.filter((s): s is number => typeof s === 'number');
-  if (rated.length < 3) return { score: null, rated: rated.length };
-  const avg = rated.reduce((a, b) => a + b, 0) / rated.length;
-  return { score: Math.round(((avg - 1) / 4) * 100), rated: rated.length };
-}
+import { chartProvenance, toStrengthen } from './derive';
+import type { Chart, Claim, Source, StandardReport } from './types';
 
 export function money(n: number, currency: string): string {
   const sym = currency === 'GBP' ? '£' : currency === 'USD' ? '$' : currency === 'AUD' ? 'A$' : `${currency} `;
@@ -31,106 +14,119 @@ export function StatusLabel({ tone, children }: { tone: 'go' | 'caution' | 'stop
   return <span className={`status status--${tone}`}>{children}</span>;
 }
 
-/* ---- Verdict ------------------------------------------------------------- */
-export function VerdictBanner({ report }: { report: StandardReport }) {
-  const tone = TONE[report.verdict.label];
+/* ---- Section title -------------------------------------------------------- */
+export function SectionTitle({ id, title, intro, eyebrow }: { id: string; title: string; intro?: string; eyebrow?: string }) {
   return (
-    <section className={`verdict-banner verdict-banner--${tone}`} aria-labelledby="verdict-h">
-      <p className="eyebrow">Verdict</p>
-      <h2 id="verdict-h" className="verdict-banner__label">
-        {report.verdict.label} <StatusLabel tone={tone}>{tone === 'go' ? 'Go: test it' : tone === 'caution' ? 'Caution: refine' : 'Stop: rethink'}</StatusLabel>
-      </h2>
-      <p className="verdict-banner__text">{report.verdict.explanation}</p>
-    </section>
+    <div className="section-title">
+      {eyebrow && <p className="eyebrow eyebrow--gold">{eyebrow}</p>}
+      <h2 id={id}>{title}</h2>
+      {intro && <p className="muted">{intro}</p>}
+    </div>
   );
 }
 
-/* ---- Scorecard ----------------------------------------------------------- */
-export function Scorecard({ report }: { report: StandardReport }) {
-  const r = readiness(report.scorecard.map((s) => s.score));
-  return (
-    <section className="report-section" aria-labelledby="score-h">
-      <h2 id="score-h">Readiness scorecard</h2>
-      <ol className="scorecard">
-        {report.scorecard.map((item) => {
-          const dim = SCORECARD_DIMENSIONS.find((d) => d.id === item.id);
-          const tone = item.score === null ? 'na' : item.score >= 4 ? 'go' : item.score >= 3 ? 'caution' : 'stop';
-          return (
-            <li key={item.id} className="scorecard__row">
-              <div className="scorecard__head">
-                <span className="scorecard__dim">{dim?.label ?? item.id}</span>
-                <span className="scorecard__pips" role="img" aria-label={item.score === null ? 'not rated' : `${item.score} out of 5`}>
-                  {[1, 2, 3, 4, 5].map((i) => (
-                    <span key={i} className={`pip ${item.score !== null && i <= item.score ? 'pip--on' : ''}`} />
-                  ))}
-                </span>
-                <StatusLabel tone={tone}>{scoreLabel(item.score)}</StatusLabel>
-              </div>
-              <p className="scorecard__note">{item.note}</p>
-              {dim && <p className="scorecard__rubric">{dim.rubric}</p>}
-            </li>
-          );
-        })}
-      </ol>
-      <p className="small muted">
-        {r.score === null ? `Indicative readiness score: insufficient evidence (${r.rated} of 5 dimensions rated).` : `Indicative readiness score: ${r.score}/100 (${r.rated} of 5 rated).`}{' '}
-        {READINESS_RUBRIC}
-      </p>
-    </section>
-  );
+/* ---- Chart with axes, legend, provenance and an accessible table ---------- */
+
+/** Wrap a category label into at most two short lines so it is never clipped. */
+function wrapLabel(label: string, max = 11): string[] {
+  const words = label.split(/\s+/);
+  const lines: string[] = [];
+  let cur = '';
+  for (const w of words) {
+    if ((cur + ' ' + w).trim().length <= max) cur = (cur + ' ' + w).trim();
+    else {
+      if (cur) lines.push(cur);
+      cur = w.length > max ? w.slice(0, max - 1) + '…' : w;
+    }
+    if (lines.length === 2) break;
+  }
+  if (lines.length < 2 && cur) lines.push(cur);
+  return lines.slice(0, 2);
 }
 
-/* ---- Chart with tooltips and an accessible data table -------------------- */
-export function EvidenceChart({ chart, sources }: { chart: StandardReport['chart']; sources: Source[] }) {
+function niceMax(max: number): number {
+  if (max <= 0) return 1;
+  const p = Math.pow(10, Math.floor(Math.log10(max)));
+  const m = max / p;
+  const step = m <= 1 ? 1 : m <= 2 ? 2 : m <= 2.5 ? 2.5 : m <= 5 ? 5 : 10;
+  return step * p;
+}
+
+export function EvidenceChart({ chart, sources, marketLabel, currency }: { chart: Chart; sources: Source[]; marketLabel: string; currency?: string }) {
   const id = useId();
   const [showTable, setShowTable] = useState(false);
   const [active, setActive] = useState<number | null>(null);
-  const label = chart.kind === 'evidence' ? 'Evidence chart' : chart.kind === 'scenario' ? 'Illustrative scenario' : 'Data gap';
-  const max = Math.max(...chart.series.map((s) => Math.abs(s.value)), 1);
-  const W = 320;
-  const H = 180;
-  const padL = 8;
-  const padB = 28;
+  const prov = chartProvenance(chart, sources, marketLabel);
+  const kindLabel = chart.kind === 'evidence' ? 'Market evidence' : chart.kind === 'scenario' ? 'Illustrative scenario' : 'Data gap';
+  const unit = chart.unit || '';
+  const W = 360;
+  const H = 220;
+  const padL = 46;
+  const padR = 10;
+  const padT = 22;
+  const padB = 44;
   const n = Math.max(chart.series.length, 1);
-  const gap = 10;
-  const bw = (W - padL * 2 - gap * (n - 1)) / n;
+  const top = niceMax(Math.max(...chart.series.map((s) => Math.abs(s.value)), 0));
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+  const gap = Math.min(16, plotW / n / 4);
+  const bw = (plotW - gap * (n - 1)) / n;
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => f * top);
+  const fmt = (v: number) => Intl.NumberFormat('en-GB', { notation: Math.abs(v) >= 10000 ? 'compact' : 'standard', maximumFractionDigits: 1 }).format(v);
+  const legend = chart.kind === 'evidence' ? prov.nature : 'Illustrative scenario (computed, not a forecast)';
   return (
     <section className="report-section chart" aria-labelledby={`${id}-h`}>
-      <p className={`eyebrow ${chart.kind !== 'evidence' ? 'eyebrow--gold' : ''}`}>{label}</p>
-      <h2 id={`${id}-h`}>{chart.title || 'Market indicator'}</h2>
+      <p className={`eyebrow ${chart.kind !== 'evidence' ? 'eyebrow--gold' : ''}`}>{kindLabel}</p>
+      <h3 id={`${id}-h`} className="chart__title">{chart.title || 'Market indicator'}</h3>
       {chart.kind === 'none' || chart.series.length === 0 ? (
-        <p className="muted">{chart.note || 'No suitable local market data was found for a chart.'}</p>
+        <p className="muted">{chart.note || 'No suitable local market data was found for a chart, so none is drawn rather than an invented one.'}</p>
       ) : (
         <>
+          <p className="small muted chart__prov">
+            {prov.geography}{prov.period ? ` · ${prov.period}` : ''}{unit ? ` · ${unit}${currency && /£|\$|GBP|USD|AUD/.test(unit) === false && /price|revenue|cost|spend|£|\$/i.test(unit) ? ` (${currency})` : ''}` : ''}
+          </p>
           <svg viewBox={`0 0 ${W} ${H}`} className="chart__svg" role="img" aria-labelledby={`${id}-h`} aria-describedby={`${id}-desc`}>
-            <desc id={`${id}-desc`}>
-              {chart.series.map((s) => `${s.label}: ${s.value}${chart.unit ? ' ' + chart.unit : ''}`).join('; ')}
-            </desc>
-            {chart.series.map((s, i) => {
-              const bh = ((H - padB - 20) * Math.abs(s.value)) / max;
-              const x = padL + i * (bw + gap);
-              const y = H - padB - bh;
+            <desc id={`${id}-desc`}>{chart.series.map((s) => `${s.label}: ${s.value}${unit ? ' ' + unit : ''}`).join('; ')}. {legend}.</desc>
+            {ticks.map((t) => {
+              const y = padT + plotH - (plotH * t) / top;
               return (
-                <g key={i} onMouseEnter={() => setActive(i)} onMouseLeave={() => setActive(null)} onFocus={() => setActive(i)} onBlur={() => setActive(null)} tabIndex={0}>
-                  <rect x={x} y={y} width={bw} height={bh} className={chart.kind === 'evidence' ? 'bar bar--evidence' : 'bar bar--scenario'} />
-                  <text x={x + bw / 2} y={y - 5} textAnchor="middle" className="chart__value">
-                    {Intl.NumberFormat('en-GB', { notation: 'compact' }).format(s.value)}
-                  </text>
-                  <text x={x + bw / 2} y={H - padB + 14} textAnchor="middle" className="chart__label">
-                    {s.label.length > 12 ? s.label.slice(0, 11) + '…' : s.label}
-                  </text>
-                  <title>{`${s.label}: ${s.value}${chart.unit ? ' ' + chart.unit : ''}${s.source_index ? ` (source ${s.source_index})` : ''}`}</title>
+                <g key={t}>
+                  <line x1={padL} x2={W - padR} y1={y} y2={y} className="chart__grid" />
+                  <text x={padL - 6} y={y + 3} textAnchor="end" className="chart__tick">{fmt(t)}</text>
                 </g>
               );
             })}
+            <text x={4} y={9} className="chart__axis-title">{unit || 'value'}</text>
+            {chart.series.map((s, i) => {
+              const bh = (plotH * Math.abs(s.value)) / top;
+              const x = padL + i * (bw + gap);
+              const y = padT + plotH - bh;
+              const lines = wrapLabel(s.label, n > 4 ? 8 : 11);
+              const isActive = active === i;
+              return (
+                <g key={i} tabIndex={0} role="button" aria-label={`${s.label}: ${s.value} ${unit}`} onMouseEnter={() => setActive(i)} onMouseLeave={() => setActive(null)} onFocus={() => setActive(i)} onBlur={() => setActive(null)} onClick={() => setActive(isActive ? null : i)} onTouchStart={() => setActive(i)}>
+                  <rect x={x} y={y} width={bw} height={bh} rx={2} className={`bar ${chart.kind === 'evidence' ? 'bar--evidence' : 'bar--scenario'} ${isActive ? 'bar--active' : ''}`} />
+                  <text x={x + bw / 2} y={y - 4} textAnchor="middle" className="chart__value">{fmt(s.value)}</text>
+                  {lines.map((ln, li) => (
+                    <text key={li} x={x + bw / 2} y={padT + plotH + 14 + li * 11} textAnchor="middle" className="chart__label">{ln}</text>
+                  ))}
+                </g>
+              );
+            })}
+            <line x1={padL} x2={W - padR} y1={padT + plotH} y2={padT + plotH} className="chart__baseline" />
           </svg>
-          {active !== null && chart.series[active] && (
-            <p className="chart__tooltip" role="status">
-              <strong>{chart.series[active].label}</strong>: {chart.series[active].value} {chart.unit}
-              {chart.series[active].source_index ? ` · source [${chart.series[active].source_index}] ${sources.find((s) => s.index === chart.series[active!].source_index)?.publisher ?? ''}` : ''}
-            </p>
-          )}
-          <p className="small muted">{chart.unit ? `${chart.unit}. ` : ''}{chart.note}</p>
+          <p className="chart__legend"><span className={`chart__swatch ${chart.kind === 'evidence' ? 'chart__swatch--evidence' : 'chart__swatch--scenario'}`} aria-hidden="true" /> {legend}{prov.sourceIndexes.length ? ` · sources ${prov.sourceIndexes.map((i) => `[${i}]`).join(' ')}` : ''}</p>
+          <p className="chart__tooltip" role="status" aria-live="polite">
+            {active !== null && chart.series[active] ? (
+              <>
+                <strong>{chart.series[active].label}</strong>: {fmt(chart.series[active].value)} {unit}
+                {chart.series[active].source_index ? ` · source [${chart.series[active].source_index}] ${sources.find((s) => s.index === chart.series[active!].source_index)?.publisher ?? ''}` : chart.kind === 'scenario' ? ' · computed scenario' : ''}
+              </>
+            ) : (
+              <span className="muted">Hover, tap or focus a bar for its value and source.</span>
+            )}
+          </p>
+          {chart.note && <p className="small muted">{chart.note}</p>}
           <button type="button" className="btn btn--ghost btn--md" aria-expanded={showTable} onClick={() => setShowTable((v) => !v)}>
             {showTable ? 'Hide data table' : 'Show data table'}
           </button>
@@ -138,19 +134,11 @@ export function EvidenceChart({ chart, sources }: { chart: StandardReport['chart
             <table className="data-table">
               <caption className="visually-hidden">{chart.title}</caption>
               <thead>
-                <tr>
-                  <th scope="col">Series</th>
-                  <th scope="col">Value{chart.unit ? ` (${chart.unit})` : ''}</th>
-                  <th scope="col">Source</th>
-                </tr>
+                <tr><th scope="col">Category</th><th scope="col">Value{unit ? ` (${unit})` : ''}</th><th scope="col">Basis</th></tr>
               </thead>
               <tbody>
                 {chart.series.map((s, i) => (
-                  <tr key={i}>
-                    <th scope="row">{s.label}</th>
-                    <td>{s.value}</td>
-                    <td>{s.source_index ? `[${s.source_index}]` : chart.kind === 'scenario' ? 'scenario' : '—'}</td>
-                  </tr>
+                  <tr key={i}><th scope="row">{s.label}</th><td>{s.value}</td><td>{s.source_index ? `source [${s.source_index}]` : chart.kind === 'scenario' ? 'illustrative scenario' : '—'}</td></tr>
                 ))}
               </tbody>
             </table>
@@ -161,24 +149,45 @@ export function EvidenceChart({ chart, sources }: { chart: StandardReport['chart
   );
 }
 
-/* ---- SWOT ---------------------------------------------------------------- */
-export function Swot({ swot }: { swot: StandardReport['swot'] }) {
-  const quads: [string, string[], 'go' | 'stop' | 'caution' | 'na'][] = [
-    ['Strengths', swot.strengths, 'go'],
-    ['Weaknesses', swot.weaknesses, 'stop'],
-    ['Opportunities', swot.opportunities, 'caution'],
-    ['Threats', swot.threats, 'na'],
-  ];
+/* ---- Insight cards: what is working, what to strengthen ------------------- */
+export function Insights({ report }: { report: StandardReport }) {
+  const strengthen = toStrengthen(report);
   return (
-    <section className="report-section" aria-labelledby="swot-h">
-      <h2 id="swot-h">Compact SWOT</h2>
-      <div className="swot">
-        {quads.map(([t, items, tone]) => (
-          <div key={t} className={`swot__quad swot__quad--${tone}`}>
-            <h3>{t}</h3>
-            <ul>{items.length ? items.map((s, i) => <li key={i}>{s}</li>) : <li>None identified from the available evidence</li>}</ul>
-          </div>
-        ))}
+    <section className="report-section" aria-labelledby="ins-h">
+      <SectionTitle id="ins-h" title="What the evidence supports, and what to strengthen" />
+      <div className="insights">
+        <div className="insight insight--strong">
+          <h3 className="h4">Supported strengths</h3>
+          <ul>{report.swot.strengths.length ? report.swot.strengths.map((s, i) => <li key={i}>{s}</li>) : <li>No strengths could be supported from the available evidence.</li>}</ul>
+          {report.swot.opportunities.length > 0 && (
+            <>
+              <h4 className="insight__sub">Opportunities</h4>
+              <ul>{report.swot.opportunities.map((s, i) => <li key={i}>{s}</li>)}</ul>
+            </>
+          )}
+        </div>
+        <div className="insight insight--work">
+          <h3 className="h4">What needs strengthening</h3>
+          {strengthen.length ? (
+            <ul className="insight__list">
+              {strengthen.map((s) => (
+                <li key={s.id}>
+                  <strong>{s.id.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase())}</strong> <span className="muted">({s.score}/100)</span>
+                  <br /><span className="small">Why it matters: {s.note}</span>
+                  <br /><span className="small">Next: {s.improvement}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <ul>{report.swot.weaknesses.map((s, i) => <li key={i}>{s}</li>)}</ul>
+          )}
+          {report.swot.threats.length > 0 && (
+            <>
+              <h4 className="insight__sub">Watch out for</h4>
+              <ul>{report.swot.threats.map((s, i) => <li key={i}>{s}</li>)}</ul>
+            </>
+          )}
+        </div>
       </div>
     </section>
   );
@@ -186,10 +195,10 @@ export function Swot({ swot }: { swot: StandardReport['swot'] }) {
 
 /* ---- Financial table ----------------------------------------------------- */
 export function FinancialTable({ fin }: { fin: FinancialResult }) {
+  const maxAbs = Math.max(...fin.rows.map((r) => Math.abs(r.revenue)), 1);
   return (
-    <section className="report-section" aria-labelledby="fin-h">
-      <h2 id="fin-h">Financial scenarios</h2>
-      <p className="small muted">Computed from the stated inputs and labelled assumptions. Monthly figures in {fin.currency}.</p>
+    <section className="report-section" id="financials" aria-labelledby="fin-h">
+      <SectionTitle id="fin-h" title="Financial scenarios" intro={`Computed in code from your inputs and labelled assumptions. Monthly figures in ${fin.currency}. An illustrative scenario, not a forecast.`} />
       <div className="table-scroll">
         <table className="data-table">
           <caption className="visually-hidden">Monthly scenarios</caption>
@@ -208,16 +217,19 @@ export function FinancialTable({ fin }: { fin: FinancialResult }) {
               <tr key={r.label}>
                 <th scope="row">{r.label}</th>
                 <td>{r.units.toLocaleString('en-GB')}</td>
-                <td>{money(r.revenue, fin.currency)}</td>
+                <td>
+                  {money(r.revenue, fin.currency)}
+                  <span className="inline-bar" aria-hidden="true"><span style={{ width: `${(Math.abs(r.revenue) / maxAbs) * 100}%` }} /></span>
+                </td>
                 <td>{money(r.contribution, fin.currency)}</td>
                 <td>{money(r.fixedCosts, fin.currency)}</td>
-                <td className={r.profit < 0 ? 'neg' : ''}>{r.profit < 0 ? '−' : ''}{money(Math.abs(r.profit), fin.currency)}</td>
+                <td className={r.profit < 0 ? 'neg' : 'pos'}>{r.profit < 0 ? '−' : ''}{money(Math.abs(r.profit), fin.currency)}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
-      <p className={fin.breakEvenUnits === null ? 'notice notice--warning' : ''} style={{ marginTop: 'var(--space-3)' }}>
+      <p className={fin.breakEvenUnits === null ? 'notice notice--warning' : 'breakeven'}>
         <strong>Break-even:</strong> {fin.breakEvenNote}
         {fin.contributionMarginPct !== null && ` Contribution margin ${fin.contributionMarginPct.toFixed(0)}%.`}
       </p>
@@ -236,16 +248,16 @@ export function FinancialTable({ fin }: { fin: FinancialResult }) {
   );
 }
 
-/* ---- Risks, improvements, experiment ------------------------------------- */
+/* ---- Risks, recommendations, experiment ---------------------------------- */
 export function Risks({ risks }: { risks: StandardReport['risks'] }) {
   return (
     <section className="report-section" aria-labelledby="risk-h">
-      <h2 id="risk-h">Three key risks and how to validate them</h2>
+      <SectionTitle id="risk-h" title="Key risks and how to test them" intro="Kept visible on purpose: each risk comes with the cheapest way to find out." />
       <ol className="risks">
         {risks.map((r, i) => (
-          <li key={i}>
-            <p><strong>Risk:</strong> {r.risk}</p>
-            <p><strong>Validate:</strong> {r.validation_method}</p>
+          <li key={i} className="risk-card">
+            <p className="risk-card__risk">{r.risk}</p>
+            <p className="risk-card__test"><strong>Test it:</strong> {r.validation_method}</p>
           </li>
         ))}
       </ol>
@@ -253,11 +265,21 @@ export function Risks({ risks }: { risks: StandardReport['risks'] }) {
   );
 }
 
-export function Improvements({ items }: { items: string[] }) {
+export function Recommendations({ items }: { items: StandardReport['improvements'] }) {
   return (
-    <section className="report-section" aria-labelledby="imp-h">
-      <h2 id="imp-h">Five prioritised improvements</h2>
-      <ol className="actions">{items.map((s, i) => <li key={i}>{s}</li>)}</ol>
+    <section className="report-section" id="roadmap" aria-labelledby="imp-h">
+      <SectionTitle id="imp-h" title="Prioritised recommendations" intro="In order of impact. Success measures are suggestions to adapt, not targets you must hit." />
+      <ol className="recs">
+        {items.map((r, i) => (
+          <li key={i} className="rec">
+            <p className="rec__action">{r.action}</p>
+            <dl className="rec__meta">
+              {r.purpose && <><dt>Why</dt><dd>{r.purpose}</dd></>}
+              {r.measure && <><dt>Measure</dt><dd>{r.measure}</dd></>}
+            </dl>
+          </li>
+        ))}
+      </ol>
     </section>
   );
 }
@@ -265,13 +287,15 @@ export function Improvements({ items }: { items: string[] }) {
 export function Experiment({ ex, currency }: { ex: StandardReport['experiment']; currency: string }) {
   return (
     <section className="report-section experiment" aria-labelledby="exp-h">
-      <h2 id="exp-h">A practical validation experiment</h2>
-      <p>{ex.description}</p>
-      <dl className="kv">
-        <dt>Budget</dt><dd>{money(ex.budget_amount, currency)}</dd>
-        <dt>Duration</dt><dd>{ex.duration}</dd>
-        <dt>Success criterion</dt><dd>{ex.success_criterion}</dd>
-      </dl>
+      <SectionTitle id="exp-h" title="What to test first" intro="One cheap experiment before you commit more money or time." />
+      <div className="experiment__card">
+        <p className="experiment__desc">{ex.description}</p>
+        <dl className="kv">
+          <dt>Budget</dt><dd>{money(ex.budget_amount, currency)}</dd>
+          <dt>Duration</dt><dd>{ex.duration}</dd>
+          <dt>Suggested success threshold</dt><dd>{ex.success_criterion}</dd>
+        </dl>
+      </div>
     </section>
   );
 }
@@ -279,8 +303,8 @@ export function Experiment({ ex, currency }: { ex: StandardReport['experiment'];
 /* ---- Sources, evidence, limitations -------------------------------------- */
 export function Sources({ sources, claims, limitations, retrievedOn }: { sources: Source[]; claims: Claim[]; limitations: string[]; retrievedOn: string | null }) {
   return (
-    <section className="report-section" aria-labelledby="src-h">
-      <h2 id="src-h">Sources and research limitations</h2>
+    <section className="report-section" id="sources" aria-labelledby="src-h">
+      <SectionTitle id="src-h" title="Sources and research limitations" />
       {sources.length === 0 ? (
         <p className="muted">No retrievable sources were found for this idea and market; every statement is an assumption or a customer input.</p>
       ) : (
@@ -312,8 +336,10 @@ export function Sources({ sources, claims, limitations, retrievedOn }: { sources
           ))}
         </ul>
       </details>
-      <h3 className="h4">Limitations</h3>
-      <ul>{limitations.map((l, i) => <li key={i}>{l}</li>)}</ul>
+      <details className="details" open>
+        <summary>Limitations ({limitations.length})</summary>
+        <ul>{limitations.map((l, i) => <li key={i}>{l}</li>)}</ul>
+      </details>
     </section>
   );
 }
@@ -323,7 +349,7 @@ export function ConsultationCta({ reportRef }: { reportRef: string }) {
   const [before, after] = CONSULTATION.text.split(CONSULTATION.email);
   return (
     <section className="cta-box" aria-labelledby="consult-h">
-      <h2 id="consult-h" className="h4">Talk to an expert</h2>
+      <h2 id="consult-h" className="h4">Need more than a report?</h2>
       <p>
         {before}
         <a href={CONSULTATION.mailto(reportRef)}>{CONSULTATION.email}</a>
@@ -333,31 +359,71 @@ export function ConsultationCta({ reportRef }: { reportRef: string }) {
   );
 }
 
-export function UpgradeCta({ onUpgrade, busy, error, available, purchased }: { onUpgrade: () => void; busy: boolean; error?: string; available: boolean; purchased: boolean }) {
+/** Harmless illustrative content for the locked preview: structure only, never real findings. */
+const PREVIEW_BLOCKS: Record<string, { heading: string; lines: number[]; table?: boolean }> = {
+  'Market insights': { heading: 'Audience segments and demand evidence', lines: [92, 78, 85, 60], table: true },
+  'Market strategy': { heading: 'Positioning, channels and pricing options', lines: [88, 70, 82] },
+  Roadmap: { heading: 'Prioritised steps and milestones', lines: [75, 90, 64, 80] },
+  'Customer journey': { heading: 'Discovery, purchase, delivery, retention', lines: [80, 72, 86] },
+  'Financial details': { heading: 'Start-up costs, unit economics, break-even', lines: [84, 66], table: true },
+};
+
+export function LockedPreview({ title, body, ideaName, onUpgrade, busy, available, compact }: { title: string; body: string; ideaName?: string; onUpgrade?: () => void; busy?: boolean; available?: boolean; compact?: boolean }) {
+  const pb = PREVIEW_BLOCKS[title] ?? { heading: title, lines: [80, 70, 85] };
+  return (
+    <div className={`locked ${compact ? 'locked--compact' : ''}`}>
+      <div className="locked__content" aria-hidden="true">
+        <p className="locked__heading">{pb.heading}{ideaName ? ` for ${ideaName}` : ''}</p>
+        {pb.lines.map((w, i) => <span key={i} className="locked__line" style={{ width: `${w}%` }} />)}
+        {pb.table && <div className="locked__table"><span /><span /><span /><span /><span /><span /></div>}
+      </div>
+      <div className="locked__overlay">
+        <span className="locked__icon" aria-hidden="true">🔒</span>
+        <p className="locked__title">{title}</p>
+        <p className="small">{body}</p>
+        <p className="small muted">Illustrative layout; written for your idea after the upgrade.</p>
+        {onUpgrade && (
+          <button type="button" className="btn btn--primary btn--md" onClick={onUpgrade} disabled={busy || available === false}>
+            {busy ? 'Preparing checkout…' : `Unlock · ${PRODUCTS.upgrade.display} additional`}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function UpgradePanel({ onUpgrade, busy, error, available, purchased, ideaName, marketLabel }: { onUpgrade?: () => void; busy?: boolean; error?: string; available?: boolean; purchased?: boolean; ideaName?: string; marketLabel?: string }) {
   if (purchased) return null;
   return (
-    <section className="upgrade" aria-labelledby="upg-h">
-      <div className="upgrade__preview" aria-hidden="true">
-        <p className="upgrade__preview-label">Illustrative preview</p>
-        <div className="upgrade__blur">
-          <p>Market opportunity and sizing methodology</p>
-          <p>Competitor comparison and positioning</p>
-          <p>Revenue, cash-flow and break-even scenarios</p>
-          <p>Sensitivity analysis and principal risks</p>
-        </div>
-      </div>
-      <div className="upgrade__body">
-        <p className="eyebrow eyebrow--gold">{PRODUCTS.upgrade.name}</p>
-        <h2 id="upg-h">Go deeper on this idea</h2>
+    <section className="upgrade" id="upgrade" aria-labelledby="upg-h">
+      <div className="upgrade__intro">
+        <p className="eyebrow eyebrow--gold">Detailed report · one-time upgrade · {PRODUCTS.upgrade.display}</p>
+        <h2 id="upg-h">Turn your assessment into a practical business plan.</h2>
         <p className="muted">
-          A full report that builds on this verdict. <strong>{PRODUCTS.upgrade.display} additional</strong> to the {PRODUCTS.standard.display} you have paid, so {PRODUCTS.standard.display} + {PRODUCTS.upgrade.display} = £52 in total. One-time payment.
+          {ideaName ? `Built on the research already done for ${ideaName}${marketLabel ? ` in ${marketLabel}` : ''}. ` : ''}
+          <strong>{PRODUCTS.upgrade.display} additional</strong> to the {PRODUCTS.standard.display} standard report you have already bought; it is not a {PRODUCTS.upgrade.display} total. One-time payment, no subscription.
         </p>
-        <ul className="upgrade__list">{DETAILED_REPORT_SECTIONS.map((s) => <li key={s}>{s}</li>)}</ul>
-        <p className="small muted">The preview above is illustrative; your detailed report is written from your answers and research after payment.</p>
+      </div>
+      <div className="upgrade__grid">
+        {UPGRADE_INCLUDES.map((u) => (
+          <div key={u.title} className="upgrade__item">
+            <LockedPreview title={u.title} body={u.body} compact />
+          </div>
+        ))}
+      </div>
+      <div className="upgrade__foot">
+        <ul className="upgrade__list">
+          {UPGRADE_INCLUDES.map((u) => <li key={u.title}><strong>{u.title}:</strong> {u.body}</li>)}
+        </ul>
         {error && <p className="field__error" role="alert">{error}</p>}
-        <button type="button" className="btn btn--primary btn--lg" onClick={onUpgrade} disabled={busy || !available}>
-          {busy ? 'Preparing checkout…' : `Get the detailed report — ${PRODUCTS.upgrade.display} additional`}
-        </button>
+        {onUpgrade ? (
+          <button type="button" className="btn btn--accent btn--lg" onClick={onUpgrade} disabled={busy || available === false}>
+            {busy ? 'Preparing checkout…' : `Unlock my detailed report — ${PRODUCTS.upgrade.display}`}
+          </button>
+        ) : (
+          <p className="small muted">Offered on your report page after you have read the standard report.</p>
+        )}
+        <p className="small muted">Previews above are illustrative placeholders, not your findings. Your detailed report is researched and written after the upgrade is confirmed; nothing is generated or sent before then.</p>
       </div>
     </section>
   );

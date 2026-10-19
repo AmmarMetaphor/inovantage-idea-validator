@@ -146,6 +146,7 @@ export async function reportStatus(req: Request, deps: Deps, contextIp?: string)
   return json({
     reportRef: shortRef(ent.standard.id),
     ideaName: ent.submission.idea_name,
+    market: ent.submission.market,
     orderedAt: ent.standard.created_at,
     expiresAt: ent.standard.report_expires_at,
     emailMasked: maskEmail(ent.standard.email),

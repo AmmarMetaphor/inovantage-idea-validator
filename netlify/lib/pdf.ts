@@ -1,20 +1,26 @@
 /*
   PDF rendering with pdfkit (standard fonts only).
 
-  renderStandardPdf: exactly two A4 pages. Every block has an explicit
-  position and a height budget; text that would exceed its budget is cut
-  with an ellipsis as a last-resort guard, but the editorial limits in
-  report-schema.ts and the "tighten" re-compose loop in jobs.ts are what keep
-  content inside the budget in practice. Charts are drawn with primitives.
-  Links are clickable (full URL in the annotation even if the display is
-  shortened).
+  renderStandardPdf: exactly two A4 pages. Page 1: header, score panel
+  (readiness score, band, confidence, strongest opportunity, next action),
+  assessment, the two factor cards with bars, supported strengths, what to
+  strengthen, a static radar and a labelled chart. Page 2: scenarios, risks,
+  recommendations, the first test, limitations, sources and the consultation
+  line. Every block has an explicit position and a height budget; text that
+  would exceed its budget is cut with an ellipsis as a last-resort guard, but
+  the editorial limits in report-schema.ts and the "tighten" re-compose loop
+  in jobs.ts are what keep content inside the budget in practice. Charts are
+  drawn with primitives and share their data with the web report. Links are
+  clickable (full URL in the annotation even if the display is shortened).
 
   renderDetailedPdf: flowing multi-page document for the upgrade.
 */
 import PDFDocument from 'pdfkit';
-import { COMPANY, CONSULTATION, PRODUCTS, READINESS_RUBRIC, SCORECARD_DIMENSIONS } from '../../src/config/product';
-import { computeFinancials, formatMoney, readinessScore, type FinancialResult } from './finance';
-import { DISCLAIMER, scoreLabel, VERDICT_TONE, type DetailedReport, type StandardReport } from './report-schema';
+import { chartProvenance, deriveHeadline, itemsForGroup, toStrengthen, type Headline } from '../../src/config/headline';
+import { COMBINED_TOTAL, COMPANY, CONSULTATION, PRODUCTS, UPGRADE_INCLUDES } from '../../src/config/product';
+import { CRITERIA, GROUPS, SCORE_DISCLAIMER, SCORE_LABEL, SCORE_RUBRIC, criterion, scoreTone, type Tone } from '../../src/config/scoring';
+import { computeFinancials, formatMoney, type FinancialResult } from './finance';
+import { DISCLAIMER, type DetailedReport, type StandardReport } from './report-schema';
 
 export interface PdfMeta {
   orderRef: string;
@@ -37,6 +43,7 @@ const TONE: Record<'go' | 'caution' | 'stop' | 'na', { fill: string; text: strin
   stop: { fill: '#fbe7e5', text: '#b3261e' },
   na: { fill: '#eaf0f7', text: '#4a6a95' },
 };
+void TONE;
 
 const A4 = { w: 595.28, h: 841.89 };
 const M = 36;
@@ -102,33 +109,64 @@ function footer(doc: Doc, meta: PdfMeta, page: number, total: number) {
    Chart primitives
 --------------------------------------------------------------------------- */
 
-function barChart(doc: Doc, chart: StandardReport['chart'], x: number, y: number, w: number, h: number) {
+const TONE_COLOR: Record<Tone, { fill: string; text: string }> = {
+  strong: { fill: '#e3f3ea', text: '#1f6f4a' },
+  moderate: { fill: '#fff3d6', text: '#8a5a00' },
+  weak: { fill: '#fbe7e5', text: '#b3261e' },
+  na: { fill: '#eaf0f7', text: '#4a6a95' },
+};
+const TEAL = '#2a7f8f';
+const GRID = '#e4e9f1';
+
+function niceMax(max: number): number {
+  if (max <= 0) return 1;
+  const p = Math.pow(10, Math.floor(Math.log10(max)));
+  const m = max / p;
+  return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 2.5 ? 2.5 : m <= 5 ? 5 : 10) * p;
+}
+
+/** Bar chart with a zero baseline, y-axis ticks and units, wrapped category labels, legend and provenance. */
+function barChart(doc: Doc, chart: StandardReport['chart'], sources: StandardReport['sources'], marketLabel: string, x: number, y: number, w: number, h: number) {
   doc.roundedRect(x, y, w, h, 6).lineWidth(0.6).strokeColor(LINE).stroke();
-  const pad = 10;
+  const pad = 9;
   let cy = y + pad;
-  cy += label(doc, chart.kind === 'evidence' ? 'Evidence chart' : chart.kind === 'scenario' ? 'Illustrative scenario' : 'Data gap', x + pad, cy, chart.kind === 'evidence' ? MUTED : GOLD);
-  cy += box(doc, chart.title || 'Market indicator', x + pad, cy, w - 2 * pad, 24, { font: 'Helvetica-Bold', size: 9 }) + 4;
-  const noteH = 30;
-  const plotH = y + h - pad - noteH - cy;
+  cy += label(doc, chart.kind === 'evidence' ? 'Market evidence' : chart.kind === 'scenario' ? 'Illustrative scenario' : 'Data gap', x + pad, cy, chart.kind === 'evidence' ? MUTED : GOLD);
+  cy += box(doc, chart.title || 'Market indicator', x + pad, cy, w - 2 * pad, 22, { font: 'Helvetica-Bold', size: 8.5 }) + 2;
+  const prov = chartProvenance(chart, sources, marketLabel);
   if (chart.kind === 'none' || chart.series.length === 0) {
-    box(doc, chart.note || 'No suitable local market data was found for a chart.', x + pad, cy + 8, w - 2 * pad, plotH + noteH, { size: 8.5, color: MUTED });
+    box(doc, chart.note || 'No suitable local market data was found, so no chart is drawn rather than an invented one.', x + pad, cy + 4, w - 2 * pad, y + h - cy - pad, { size: 7.5, color: MUTED });
     return;
-  } else {
-    const max = Math.max(...chart.series.map((s) => Math.abs(s.value)), 1);
-    const n = chart.series.length;
-    const gap = 6;
-    const bw = (w - 2 * pad - gap * (n - 1)) / n;
-    const base = cy + plotH - 14;
-    chart.series.forEach((s, i) => {
-      const bx = x + pad + i * (bw + gap);
-      const bh = Math.max(2, ((plotH - 26) * Math.abs(s.value)) / max);
-      doc.rect(bx, base - bh, bw, bh).fill(chart.kind === 'evidence' ? NAVY : GOLD);
-      doc.font('Helvetica').fontSize(6.5).fillColor(INK).text(formatCompact(s.value), bx, base - bh - 9, { width: bw, align: 'center', lineBreak: false });
-      doc.fontSize(6.5).fillColor(MUTED).text(s.label, bx - 2, base + 3, { width: bw + 4, align: 'center', height: 9, ellipsis: true });
-    });
-    doc.moveTo(x + pad, base).lineTo(x + w - pad, base).lineWidth(0.5).strokeColor(LINE).stroke();
   }
-  box(doc, `${chart.unit ? chart.unit + '. ' : ''}${chart.note}`, x + pad, y + h - pad - noteH + 2, w - 2 * pad, noteH, { size: 6.8, color: MUTED });
+  cy += box(doc, `${prov.geography}${prov.period ? ' · ' + prov.period : ''}`, x + pad, cy, w - 2 * pad, 10, { size: 6.5, color: MUTED }) + 2;
+  const legendH = 20;
+  const axisL = 26;
+  const labelH = 20;
+  const plotTop = cy + 8;
+  const plotBottom = y + h - pad - legendH - labelH;
+  const plotH = Math.max(30, plotBottom - plotTop);
+  const plotX = x + pad + axisL;
+  const plotW = w - 2 * pad - axisL;
+  const top = niceMax(Math.max(...chart.series.map((s) => Math.abs(s.value)), 0));
+  // y-axis ticks and grid
+  [0, 0.5, 1].forEach((f) => {
+    const yy = plotBottom - plotH * f;
+    doc.moveTo(plotX, yy).lineTo(plotX + plotW, yy).lineWidth(0.4).strokeColor(f === 0 ? MUTED : GRID).stroke();
+    doc.font('Helvetica').fontSize(5.8).fillColor(MUTED).text(formatCompact(top * f), x + pad - 2, yy - 3, { width: axisL, align: 'right', lineBreak: false });
+  });
+  doc.font('Helvetica').fontSize(5.6).fillColor(MUTED).text((chart.unit || 'value').toUpperCase(), x + pad, plotTop - 8, { lineBreak: false, characterSpacing: 0.4 });
+  const n = chart.series.length;
+  const gap = Math.min(10, plotW / n / 4);
+  const bw = (plotW - gap * (n - 1)) / n;
+  chart.series.forEach((s, i) => {
+    const bx = plotX + i * (bw + gap);
+    const bh = Math.max(1, (plotH * Math.abs(s.value)) / top);
+    doc.rect(bx, plotBottom - bh, bw, bh).fill(chart.kind === 'evidence' ? NAVY : GOLD);
+    doc.font('Helvetica-Bold').fontSize(6.2).fillColor(INK).text(formatCompact(s.value), bx - 4, plotBottom - bh - 8, { width: bw + 8, align: 'center', lineBreak: false });
+    doc.font('Helvetica').fontSize(5.8).fillColor(MUTED).text(s.label, bx - 3, plotBottom + 3, { width: bw + 6, align: 'center', height: labelH - 2, ellipsis: true, lineGap: 0 });
+  });
+  const ly = y + h - pad - legendH + 4;
+  doc.rect(x + pad, ly + 1, 6, 6).fill(chart.kind === 'evidence' ? NAVY : GOLD);
+  box(doc, `${prov.nature}${prov.sourceIndexes.length ? ` · sources ${prov.sourceIndexes.map((i) => `[${i}]`).join(' ')}` : ''}`, x + pad + 9, ly, w - 2 * pad - 9, 16, { size: 6, color: MUTED });
 }
 
 function formatCompact(n: number): string {
@@ -137,6 +175,110 @@ function formatCompact(n: number): string {
   if (abs >= 1e6) return `${(n / 1e6).toFixed(1)}m`;
   if (abs >= 1e4) return `${Math.round(n / 1e3)}k`;
   return Number.isInteger(n) ? String(n) : n.toFixed(1);
+}
+
+/** Static radar: nine axes, rings at 25/50/75/100, polygon through scored criteria; unscored axes are dashed and labelled n/a. */
+function radar(doc: Doc, report: StandardReport, x: number, y: number, w: number, h: number) {
+  doc.roundedRect(x, y, w, h, 6).lineWidth(0.6).strokeColor(LINE).stroke();
+  label(doc, 'Criteria radar', x + 9, y + 9);
+  const cx = x + w / 2;
+  const cy = y + 18 + (h - 18) / 2;
+  const R = Math.min(w, h - 18) / 2 - 26;
+  const n = CRITERIA.length;
+  const pt = (i: number, v: number) => {
+    const a = -Math.PI / 2 + (i * 2 * Math.PI) / n;
+    return { x: cx + Math.cos(a) * R * (v / 100), y: cy + Math.sin(a) * R * (v / 100), a };
+  };
+  for (const v of [25, 50, 75, 100]) {
+    const p0 = pt(0, v);
+    doc.moveTo(p0.x, p0.y);
+    for (let i = 1; i < n; i += 1) {
+      const p = pt(i, v);
+      doc.lineTo(p.x, p.y);
+    }
+    doc.closePath().lineWidth(0.4).strokeColor(GRID).stroke();
+    doc.font('Helvetica').fontSize(5).fillColor(MUTED).text(String(v), cx + 2, cy - R * (v / 100) - 5, { lineBreak: false });
+  }
+  const items = CRITERIA.map((c, i) => ({ c, i, item: report.scorecard.find((s) => s.id === c.id) }));
+  for (const { c, i, item } of items) {
+    const e = pt(i, 100);
+    const na = !item || item.score === null;
+    if (na) doc.dash(2, { space: 2 });
+    doc.moveTo(cx, cy).lineTo(e.x, e.y).lineWidth(0.4).strokeColor(na ? '#a9b8cf' : GRID).stroke();
+    doc.undash();
+    const l = pt(i, 100);
+    const lx = cx + Math.cos(l.a) * (R + 14);
+    const ly = cy + Math.sin(l.a) * (R + 14);
+    const align = Math.abs(Math.cos(l.a)) < 0.2 ? 'center' : Math.cos(l.a) > 0 ? 'left' : 'right';
+    const tw = 44;
+    doc.font(na ? 'Helvetica' : 'Helvetica-Bold').fontSize(5.6).fillColor(na ? '#7389ab' : NAVY).text(`${c.short}${na ? ' (n/a)' : ''}`, align === 'left' ? lx : align === 'right' ? lx - tw : lx - tw / 2, ly - 3, { width: tw, align, lineBreak: false });
+  }
+  const scored = items.filter(({ item }) => item && item.score !== null);
+  if (scored.length >= 3) {
+    scored.forEach(({ i, item }, k) => {
+      const p = pt(i, item!.score!);
+      if (k === 0) doc.moveTo(p.x, p.y);
+      else doc.lineTo(p.x, p.y);
+    });
+    doc.closePath().lineWidth(1.2).fillOpacity(0.16).fillAndStroke(NAVY, NAVY);
+    doc.fillOpacity(1);
+    for (const { i, item } of scored) {
+      const p = pt(i, item!.score!);
+      doc.circle(p.x, p.y, 2).fill(TEAL);
+    }
+  }
+}
+
+/** Score ring with the number inside, drawn as an SVG arc path. */
+function scoreRing(doc: Doc, score: number | null, cx: number, cy: number, r: number, onDark: boolean) {
+  const tone = scoreTone(score);
+  doc.circle(cx, cy, r).lineWidth(6).strokeColor(onDark ? '#2b4466' : '#eaf0f7').stroke();
+  if (score !== null && score > 0) {
+    const frac = Math.min(100, score) / 100;
+    const end = -Math.PI / 2 + 2 * Math.PI * frac;
+    const sx = cx;
+    const sy = cy - r;
+    const ex = cx + Math.cos(end) * r;
+    const ey = cy + Math.sin(end) * r;
+    const large = frac > 0.5 ? 1 : 0;
+    const col = tone === 'strong' ? '#5fcf92' : tone === 'moderate' ? '#e8c060' : '#f08a7e';
+    if (frac >= 0.999) doc.circle(cx, cy, r).lineWidth(6).strokeColor(col).stroke();
+    else doc.path(`M ${sx} ${sy} A ${r} ${r} 0 ${large} 1 ${ex} ${ey}`).lineWidth(6).lineCap('round').strokeColor(col).stroke();
+  }
+  if (score === null) {
+    doc.font('Helvetica-Bold').fontSize(7).fillColor(onDark ? '#ffffff' : NAVY).text('Incomplete', cx - r, cy - 4, { width: 2 * r, align: 'center', lineBreak: false });
+  } else {
+    doc.font('Times-Bold').fontSize(22).fillColor(onDark ? '#ffffff' : NAVY).text(String(score), cx - r, cy - 13, { width: 2 * r, align: 'center', lineBreak: false });
+    doc.font('Helvetica').fontSize(6.5).fillColor(onDark ? '#c8d1de' : MUTED).text('/100', cx - r, cy + 10, { width: 2 * r, align: 'center', lineBreak: false });
+  }
+}
+
+/** Factor card: heading, group average, one row per criterion with a bar, score and basis. */
+function factorCard(doc: Doc, report: StandardReport, group: 'market' | 'execution', headline: Headline, x: number, y: number, w: number): number {
+  const g = GROUPS.find((gg) => gg.id === group)!;
+  const items = itemsForGroup(report, group);
+  const rowH = 21;
+  const h = 24 + items.length * rowH + 4;
+  doc.roundedRect(x, y, w, h, 6).fill('#f6f4ef');
+  doc.font('Helvetica-Bold').fontSize(8.5).fillColor(NAVY).text(g.label, x + 9, y + 7, { lineBreak: false });
+  const gs = headline.groups[group];
+  doc.font('Helvetica').fontSize(7).fillColor(MUTED).text(gs.score === null ? 'not scored' : `average ${gs.score}`, x + w - 90, y + 8, { width: 82, align: 'right', lineBreak: false });
+  let ry = y + 24;
+  const labelW = 98;
+  const barX = x + 9 + labelW;
+  const barW = w - labelW - 9 - 9 - 62;
+  for (const item of items) {
+    const c = criterion(item.id);
+    const tone = scoreTone(item.score);
+    doc.font('Helvetica').fontSize(7).fillColor(INK).text(c?.label ?? item.id, x + 9, ry + 2, { width: labelW - 4, lineBreak: false, ellipsis: true });
+    doc.roundedRect(barX, ry + 3, barW, 6, 3).fill('#e4e9f1');
+    if (item.score !== null) doc.roundedRect(barX, ry + 3, Math.max(3, (barW * item.score) / 100), 6, 3).fill(TONE_COLOR[tone].text);
+    const txt = item.score === null ? 'Not enough evidence' : `${item.score}/100 · ${item.basis === 'evidence' ? 'evidence' : 'assumption'}`;
+    doc.font(item.score === null ? 'Helvetica-Oblique' : 'Helvetica-Bold').fontSize(6.3).fillColor(item.score === null ? MUTED : INK).text(txt, barX + barW + 4, ry + 2, { width: 60, lineBreak: false });
+    box(doc, item.note, x + 9, ry + 11, w - 18, 9, { size: 5.8, color: MUTED });
+    ry += rowH;
+  }
+  return h;
 }
 
 /* ---------------------------------------------------------------------------
@@ -152,131 +294,151 @@ export async function renderStandardPdf(report: StandardReport, meta: PdfMeta): 
     fixedMonthly: { value: report.financial_inputs.fixed_monthly.value, unit: 'per month', basis: report.financial_inputs.fixed_monthly.basis, note: report.financial_inputs.fixed_monthly.note },
     volumes: { ...report.financial_inputs.volumes },
   });
+  const headline = deriveHeadline(report);
 
   /* ---------------- Page 1 ---------------- */
-  // Header band
-  doc.rect(0, 0, A4.w, 86).fill(NAVY);
-  doc.font('Helvetica').fontSize(7.5).fillColor(SAND).text(`${COMPANY.name.toUpperCase()}  ·  ${COMPANY.productName.toUpperCase()}  ·  ${PRODUCTS.standard.name.toUpperCase()}`, M, 18, { characterSpacing: 1.5, lineBreak: false });
-  box(doc, report.title, M, 32, CW - 150, 36, { font: 'Times-Roman', size: 17, color: '#ffffff', lineGap: 0 });
-  box(doc, `${meta.marketLabel}  ·  ${meta.generatedAt.toISOString().slice(0, 10)}  ·  Ref ${meta.orderRef}`, M, 70, CW, 12, { size: 7.5, color: '#c8d1de' });
-  if (meta.reportUrl) box(doc, 'Open web report', A4.w - M - 120, 36, 120, 12, { size: 8, color: SAND, align: 'right', link: meta.reportUrl });
+  doc.rect(0, 0, A4.w, 92).fill(NAVY);
+  doc.font('Helvetica').fontSize(7.5).fillColor(SAND).text(`${COMPANY.name.toUpperCase()}  ·  ${COMPANY.productName.toUpperCase()}  ·  ${PRODUCTS.standard.name.toUpperCase()}`, M, 16, { characterSpacing: 1.5, lineBreak: false });
+  box(doc, report.title, M, 30, CW - 130, 36, { font: 'Times-Roman', size: 17, color: '#ffffff', lineGap: 0 });
+  box(doc, `Launch market: ${meta.marketLabel}  ·  ${meta.generatedAt.toISOString().slice(0, 10)}  ·  Ref ${meta.orderRef}`, M, 68, CW, 12, { size: 7.5, color: '#c8d1de' });
+  if (meta.reportUrl) box(doc, 'Open web report', A4.w - M - 120, 34, 120, 12, { size: 8, color: SAND, align: 'right', link: meta.reportUrl });
 
-  let y = 100;
-  // Idea summary + verdict
-  y += box(doc, report.idea_summary, M, y, CW, 24, { size: 9, color: MUTED }) + 8;
-  const tone = VERDICT_TONE[report.verdict.label];
-  doc.rect(M, y, 4, 62).fill(TONE[tone].text);
-  label(doc, 'Verdict', M + 12, y);
-  doc.font('Times-Bold').fontSize(16).fillColor(NAVY).text(report.verdict.label, M + 12, y + 12, { lineBreak: false });
-  chip(doc, tone === 'go' ? 'GO: test it' : tone === 'caution' ? 'CAUTION: refine' : 'STOP: rethink', M + 12 + doc.widthOfString(report.verdict.label) + 12, y + 13, tone);
-  box(doc, report.verdict.explanation, M + 12, y + 32, CW - 12, 56, { size: 9, lineGap: 1.6 });
-  y += 96;
+  // Score panel
+  let y = 102;
+  const panelH = 124;
+  doc.roundedRect(M, y, CW, panelH, 8).fill('#0b1a2e');
+  scoreRing(doc, headline.overall.score, M + 44, y + panelH / 2, 30, true);
+  const sx = M + 92;
+  const scoreW = 180;
+  label(doc, SCORE_LABEL, sx, y + 12, SAND);
+  box(doc, headline.band.title, sx, y + 24, scoreW, 30, { font: 'Times-Roman', size: 12, color: '#ffffff', lineGap: 0 });
+  box(doc, headline.overall.score === null ? `Only ${headline.overall.scored} of ${headline.overall.total} criteria could be scored; an overall score needs at least six.` : `${headline.overall.scored} of ${headline.overall.total} criteria scored${headline.overall.missing.length ? `; ${headline.overall.missing.length} not enough evidence` : ''}.`, sx, y + 56, scoreW, 22, { size: 6.6, color: '#c8d1de' });
+  doc.font('Helvetica-Bold').fontSize(6.4).fillColor(SAND).text('EVIDENCE CONFIDENCE', sx, y + 82, { characterSpacing: 0.8, lineBreak: false });
+  chip(doc, headline.confidence.label, sx + 88, y + 79, headline.confidence.level === 'high' ? 'go' : headline.confidence.level === 'medium' ? 'caution' : 'stop');
+  box(doc, headline.confidence.detail, sx, y + 97, scoreW, 20, { size: 5.8, color: '#c8d1de' });
+  const mx = sx + scoreW + 14;
+  const mw = M + CW - mx - 10;
+  doc.roundedRect(mx, y + 10, mw, 50, 4).fill('#15294a');
+  label(doc, 'Strongest supported opportunity', mx + 8, y + 15, SAND);
+  box(doc, headline.strongest.text, mx + 8, y + 27, mw - 16, 30, { size: 6.8, color: '#ffffff' });
+  doc.roundedRect(mx, y + 66, mw, 50, 4).fill('#15294a');
+  label(doc, 'Most useful next action', mx + 8, y + 71, SAND);
+  box(doc, headline.nextAction, mx + 8, y + 83, mw - 16, 30, { size: 6.8, color: '#ffffff' });
+  y += panelH + 6;
 
-  // Scorecard (left) + chart (right)
-  const leftW = 300;
-  const rightX = M + leftW + 18;
-  const rightW = CW - leftW - 18;
-  y += heading(doc, 'Readiness scorecard', M, y, leftW);
-  const chartTop = y - 22;
-  const ratings = report.scorecard.map((s) => s.score);
-  const rowH = 33;
-  for (const item of report.scorecard) {
-    const dim = SCORECARD_DIMENSIONS.find((d) => d.id === item.id);
-    doc.font('Helvetica-Bold').fontSize(8.5).fillColor(INK).text(dim?.label ?? item.id, M, y, { width: 95, lineBreak: false });
-    for (let i = 0; i < 5; i += 1) {
-      const filled = item.score !== null && i < item.score;
-      doc.rect(M + 98 + i * 12, y + 1, 9, 9).lineWidth(0.5).strokeColor(filled ? NAVY : LINE).fillAndStroke(filled ? NAVY : '#ffffff', filled ? NAVY : LINE);
-    }
-    const sl = scoreLabel(item.score);
-    chip(doc, sl, M + 164, y - 2, item.score === null ? 'na' : item.score >= 4 ? 'go' : item.score >= 3 ? 'caution' : 'stop');
-    box(doc, item.note, M, y + 12, leftW, 18, { size: 7.5, color: MUTED });
-    y += rowH;
-  }
-  const rs = readinessScore(ratings);
-  y += 2;
-  box(doc, rs.score === null ? `Indicative readiness score: insufficient evidence (${rs.rated} of 5 dimensions rated). ${READINESS_RUBRIC}` : `Indicative readiness score: ${rs.score}/100 (${rs.rated} of 5 dimensions rated). ${READINESS_RUBRIC}`, M, y, leftW, 34, { size: 6.8, color: MUTED });
-  y += 40;
-  barChart(doc, report.chart, rightX, chartTop, rightW, y - chartTop - 6);
+  // Assessment
+  y += box(doc, report.idea_summary, M, y, CW, 11, { size: 7.5, color: MUTED }) + 2;
+  y += box(doc, report.verdict.explanation, M, y, CW, 44, { size: 8, lineGap: 1.4 }) + 2;
+  y += box(doc, SCORE_DISCLAIMER, M, y, CW, 10, { size: 6, color: MUTED }) + 6;
 
-  // SWOT
-  y += heading(doc, 'Compact SWOT', M, y, CW);
-  const qW = (CW - 14) / 2;
-  const qH = Math.min(150, (A4.h - M - 24 - y) / 2 - 8);
-  const quads: [string, string[], keyof typeof TONE][] = [
-    ['Strengths', report.swot.strengths, 'go'],
-    ['Weaknesses', report.swot.weaknesses, 'stop'],
-    ['Opportunities', report.swot.opportunities, 'caution'],
-    ['Threats', report.swot.threats, 'na'],
-  ];
-  quads.forEach(([title, items, t], i) => {
-    const qx = M + (i % 2) * (qW + 14);
-    const qy = y + Math.floor(i / 2) * (qH + 8);
-    doc.roundedRect(qx, qy, qW, qH, 5).fill(TONE[t].fill);
-    doc.font('Helvetica-Bold').fontSize(8).fillColor(TONE[t].text).text(title, qx + 8, qy + 6, { lineBreak: false });
-    const text = items.length ? items.map((s) => `• ${s}`).join('\n') : '• None identified from the available evidence';
-    box(doc, text, qx + 8, qy + 18, qW - 16, qH - 22, { size: 7.8, lineGap: 1.2 });
-  });
+  // Left column: factor cards + insights; right column: radar + chart + rubric
+  const leftW = 306;
+  const rightX = M + leftW + 12;
+  const rightW = CW - leftW - 12;
+  const colTop = y;
+  let ly = colTop;
+  ly += factorCard(doc, report, 'market', headline, M, ly, leftW) + 6;
+  ly += factorCard(doc, report, 'execution', headline, M, ly, leftW) + 6;
+  const bottom = A4.h - M - 14;
+  const strengthen = toStrengthen(report, 3);
+  const positives = [...report.swot.strengths, ...report.swot.opportunities.map((o) => `Opportunity: ${o}`)];
+  const posText = positives.length ? positives.map((s) => `• ${s}`).join('\n') : '• None could be supported from the available evidence.';
+  const work = strengthen.length
+    ? strengthen.map((s) => `• ${criterion(s.id)?.label ?? s.id} (${s.score}/100): ${s.improvement}`)
+    : [...report.swot.weaknesses.map((w) => `• ${w}`), ...report.swot.threats.map((t) => `• Threat: ${t}`)];
+  const workText = work.join('\n') || '• Nothing specific was identified.';
+  // Size the two insight boxes to their content (never giant empty cards), within the remaining column.
+  const avail = bottom - ly - 6;
+  doc.font('Helvetica').fontSize(6.9);
+  const need = (t: string) => Math.ceil(doc.heightOfString(t, { width: leftW - 16, lineGap: 1.1 })) + 24;
+  let posH = Math.min(Math.max(44, need(posText)), avail * 0.55);
+  let workH = Math.min(Math.max(44, need(workText)), avail - posH - 6);
+  if (posH + workH + 6 > avail) posH = avail - workH - 6;
+  doc.roundedRect(M, ly, leftW, posH, 6).fill(TONE_COLOR.strong.fill);
+  doc.font('Helvetica-Bold').fontSize(7.5).fillColor(TONE_COLOR.strong.text).text('Supported strengths and opportunities', M + 8, ly + 6, { lineBreak: false });
+  box(doc, posText, M + 8, ly + 18, leftW - 16, posH - 22, { size: 6.9, lineGap: 1.1 });
+  const wy = ly + posH + 6;
+  doc.roundedRect(M, wy, leftW, workH, 6).fill('#f1e9d8');
+  doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#8a5a00').text('What needs strengthening', M + 8, wy + 6, { lineBreak: false });
+  box(doc, workText, M + 8, wy + 18, leftW - 16, workH - 22, { size: 6.9, lineGap: 1.1 });
+
+  const radarH = 196;
+  radar(doc, report, rightX, colTop, rightW, radarH);
+  const chartTop = colTop + radarH + 6;
+  const chartH = 176;
+  barChart(doc, report.chart, report.sources, meta.marketLabel, rightX, chartTop, rightW, chartH);
+  box(doc, SCORE_RUBRIC, rightX, chartTop + chartH + 6, rightW, bottom - (chartTop + chartH + 6), { size: 5.9, color: MUTED, lineGap: 0.8 });
   footer(doc, meta, 1, 2);
 
   /* ---------------- Page 2 ---------------- */
   doc.addPage();
   y = M;
-  y += heading(doc, 'Financial scenarios (computed from stated inputs)', M, y, CW);
+  y += heading(doc, 'Financial scenarios (computed from stated inputs; illustrative, not a forecast)', M, y, CW);
   y = financialTable(doc, fin, M, y, CW);
 
-  y += heading(doc, 'Three key risks and how to validate them', M, y, CW);
-  for (const r of report.risks) {
-    doc.font('Helvetica-Bold').fontSize(8).fillColor(INK).text('Risk', M, y, { lineBreak: false });
-    const h1 = box(doc, r.risk, M + 28, y, 230, 22, { size: 8 });
-    doc.font('Helvetica-Bold').fontSize(8).fillColor(INK).text('Validate', M + 272, y, { lineBreak: false });
-    const h2 = box(doc, r.validation_method, M + 312, y, CW - 312, 22, { size: 8 });
-    y += Math.max(h1, h2, 11) + 5;
-  }
-  y += 4;
+  y += heading(doc, 'Key risks and how to test them', M, y, CW);
+  const riskW = (CW - 16) / 3;
+  const riskH = 58;
+  report.risks.forEach((r, i) => {
+    const rx = M + i * (riskW + 8);
+    doc.roundedRect(rx, y, riskW, riskH, 5).lineWidth(0.5).strokeColor(LINE).stroke();
+    doc.rect(rx, y, riskW, 2.5).fill('#8a5a00');
+    const h1 = box(doc, r.risk, rx + 6, y + 7, riskW - 12, 24, { size: 7.3, font: 'Helvetica-Bold' });
+    box(doc, `Test it: ${r.validation_method}`, rx + 6, y + 9 + h1, riskW - 12, riskH - 12 - h1, { size: 6.8, color: MUTED });
+  });
+  y += riskH + 10;
 
   const halfW = (CW - 16) / 2;
-  const colTop = y;
-  let ly = colTop + heading(doc, 'Five prioritised improvements', M, colTop, halfW);
-  report.improvements.forEach((s, i) => {
-    ly += box(doc, `${i + 1}. ${s}`, M, ly, halfW, 30, { size: 8 }) + 3;
+  const colTop2 = y;
+  let lyy = colTop2 + heading(doc, 'Prioritised recommendations', M, colTop2, halfW);
+  report.improvements.forEach((r, i) => {
+    const h1 = box(doc, `${i + 1}. ${r.action}`, M, lyy, halfW, 20, { size: 7.4, font: 'Helvetica-Bold' });
+    const meta2 = [r.purpose ? `Why: ${r.purpose}` : '', r.measure ? `Measure: ${r.measure}` : ''].filter(Boolean).join('  ·  ');
+    const h2 = meta2 ? box(doc, meta2, M + 10, lyy + h1 + 1, halfW - 10, 18, { size: 6.4, color: MUTED }) : 0;
+    lyy += h1 + h2 + 5;
   });
-  let ry = colTop + heading(doc, 'A practical validation experiment', M + halfW + 16, colTop, halfW);
+  const rx2 = M + halfW + 16;
+  let ry = colTop2 + heading(doc, 'What to test first', rx2, colTop2, halfW);
   const ex = report.experiment;
-  ry += box(doc, ex.description, M + halfW + 16, ry, halfW, 44, { size: 8 }) + 4;
-  ry += box(doc, `Budget: ${formatMoney(ex.budget_amount, fin.currency)}   ·   Duration: ${ex.duration}`, M + halfW + 16, ry, halfW, 12, { size: 8, font: 'Helvetica-Bold' }) + 3;
-  ry += box(doc, `Success criterion: ${ex.success_criterion}`, M + halfW + 16, ry, halfW, 32, { size: 8 }) + 2;
-  y = Math.max(ly, ry) + 6;
+  doc.roundedRect(rx2, ry, halfW, 84, 5).fill('#eaf0f7');
+  doc.rect(rx2, ry, 3, 84).fill(TEAL);
+  const eh = box(doc, ex.description, rx2 + 10, ry + 7, halfW - 18, 34, { size: 7.6 });
+  box(doc, `Budget: ${formatMoney(ex.budget_amount, fin.currency)}   ·   Duration: ${ex.duration}`, rx2 + 10, ry + 9 + eh, halfW - 18, 11, { size: 7, font: 'Helvetica-Bold' });
+  box(doc, `Suggested success threshold: ${ex.success_criterion}`, rx2 + 10, ry + 21 + eh, halfW - 18, 84 - 24 - eh, { size: 6.8 });
+  ry += 90;
+  ry += label(doc, 'Limitations', rx2, ry);
+  ry += box(doc, report.limitations.map((l) => `• ${l}`).join('\n'), rx2, ry, halfW, 56, { size: 6.6, color: INK, lineGap: 1 });
+  y = Math.max(lyy, ry) + 6;
 
-  // Sources and limitations
-  const ctaH = 72;
+  // Sources
+  const ctaH = 66;
   const srcBottom = A4.h - M - 12 - ctaH;
-  y += heading(doc, 'Sources and research limitations', M, y, CW);
-  const srcW = CW * 0.6;
-  const limX = M + srcW + 14;
-  const limW = CW - srcW - 14;
+  y += heading(doc, 'Sources and evidence basis', M, y, CW);
+  const srcW = CW * 0.62;
+  const noteX = M + srcW + 12;
+  const noteW = CW - srcW - 12;
   let sy = y;
-  const perSource = Math.max(20, Math.floor((srcBottom - y) / Math.max(report.sources.length, 1)));
-  if (!report.sources.length) sy += box(doc, 'No retrievable sources were found for this idea and market; every statement above is an assumption or a customer input.', M, sy, srcW, 30, { size: 7.5, color: MUTED });
+  const perSource = Math.max(18, Math.floor((srcBottom - y) / Math.max(report.sources.length, 1)));
+  if (!report.sources.length) sy += box(doc, 'No retrievable sources were found for this idea and market; every statement above is an assumption or a customer input.', M, sy, srcW, 30, { size: 7, color: MUTED });
   for (const s of report.sources) {
-    const metaLine = [s.publisher, s.published_date ?? 'date unknown', s.geography, s.claim_type === 'forecast' ? 'forecast' : s.claim_type === 'historical' ? 'historical' : null].filter(Boolean).join(' · ');
-    const h1 = box(doc, `[${s.index}] ${s.title}${metaLine ? ` — ${metaLine}` : ''}`, M, sy, srcW, Math.min(22, perSource - 9), { size: 7.2 });
-    const h2 = box(doc, s.url, M, sy + h1 + 1, srcW, Math.max(8, perSource - h1 - 4), { size: 6.5, color: MUTED, link: s.url });
-    sy += h1 + h2 + 4;
-    if (sy > srcBottom - 8) break;
+    if (sy + 18 > srcBottom) break; // never run into the CTAs
+    const metaLine = [s.publisher, s.published_date ?? 'date unknown', s.geography, s.period, s.claim_type === 'forecast' ? 'forecast' : s.claim_type === 'historical' ? 'historical' : null].filter(Boolean).join(' · ');
+    const h1 = box(doc, `[${s.index}] ${s.title}${metaLine ? ` — ${metaLine}` : ''}`, M, sy, srcW, Math.min(20, perSource - 8, srcBottom - sy - 9), { size: 6.8 });
+    const h2 = box(doc, s.url, M, sy + h1 + 1, srcW, Math.max(7, Math.min(perSource - h1 - 4, srcBottom - sy - h1 - 2)), { size: 6, color: MUTED, link: s.url });
+    sy += h1 + h2 + 3;
   }
-  let lyy = y;
-  lyy += label(doc, 'Limitations', limX, lyy);
-  lyy += box(doc, report.limitations.map((l) => `• ${l}`).join('\n'), limX, lyy, limW, srcBottom - lyy - 40, { size: 7.3, color: INK, lineGap: 1.2 });
-  box(doc, 'Retrieval date: ' + meta.generatedAt.toISOString().slice(0, 10) + '. Evidence claims cite the numbered sources; assumptions and customer inputs are labelled. ' + DISCLAIMER, limX, Math.max(lyy + 4, srcBottom - 44), limW, 44, { size: 6.4, color: MUTED });
+  const evidence = report.claims.filter((c) => c.kind === 'evidence').length;
+  const assumptions = report.claims.filter((c) => c.kind === 'assumption').length;
+  const noteH = box(doc, `Evidence basis: ${evidence} evidence claim${evidence === 1 ? '' : 's'} citing the numbered sources, ${assumptions} labelled assumption${assumptions === 1 ? '' : 's'}, ${report.claims.length - evidence - assumptions} customer inputs or calculations. Full claim list on the web report. Retrieval date ${meta.generatedAt.toISOString().slice(0, 10)}. ${DISCLAIMER}`, noteX, y, noteW, srcBottom - y, { size: 6.2, color: MUTED, lineGap: 0.9 });
 
-  // CTAs
-  const cy = A4.h - M - 8 - ctaH;
+  // CTAs follow the content rather than sitting at the foot of a half-empty page.
+  const cy = Math.min(A4.h - M - 8 - ctaH, Math.max(sy, y + noteH) + 12);
   doc.roundedRect(M, cy, halfW, ctaH, 6).fill('#f6f4ef');
-  doc.font('Helvetica-Bold').fontSize(8.5).fillColor(NAVY).text('Talk to an expert', M + 10, cy + 8, { lineBreak: false });
-  box(doc, CONSULTATION.text, M + 10, cy + 20, halfW - 20, 46, { size: 7.3, link: CONSULTATION.mailto(meta.orderRef) });
+  doc.font('Helvetica-Bold').fontSize(8.5).fillColor(NAVY).text('Need more than a report?', M + 10, cy + 8, { lineBreak: false });
+  box(doc, CONSULTATION.text, M + 10, cy + 20, halfW - 20, 42, { size: 7.2, link: CONSULTATION.mailto(meta.orderRef) });
   doc.roundedRect(M + halfW + 16, cy, halfW, ctaH, 6).fill(NAVY);
-  doc.font('Helvetica-Bold').fontSize(8.5).fillColor('#ffffff').text(`Get the detailed report — ${PRODUCTS.upgrade.display} additional`, M + halfW + 26, cy + 8, { lineBreak: false });
-  box(doc, `Nine sections: sizing methodology, segments, competitor comparison, pricing and route to market, cost assumptions, cash-flow and break-even scenarios, sensitivity, launch roadmap, sources. ${PRODUCTS.upgrade.display} is additional to the ${PRODUCTS.standard.display} you have paid (${PRODUCTS.standard.display} + ${PRODUCTS.upgrade.display} = £52 in total).${meta.reportUrl ? ' Open your report page to upgrade.' : ''}`, M + halfW + 26, cy + 20, halfW - 20, 48, { size: 7.2, color: '#e3e9f2', link: meta.reportUrl });
+  doc.font('Helvetica-Bold').fontSize(8.5).fillColor('#ffffff').text(`Detailed report — one-time upgrade, ${PRODUCTS.upgrade.display} additional`, M + halfW + 26, cy + 8, { lineBreak: false });
+  box(doc, `${UPGRADE_INCLUDES.map((u) => u.title).join(' · ')}. ${PRODUCTS.upgrade.display} is additional to the ${PRODUCTS.standard.display} standard report (${PRODUCTS.standard.display} + ${PRODUCTS.upgrade.display} = ${COMBINED_TOTAL.display} in total).${meta.reportUrl ? ' Open your report page to upgrade.' : ''}`, M + halfW + 26, cy + 20, halfW - 20, 42, { size: 7, color: '#e3e9f2', link: meta.reportUrl });
   footer(doc, meta, 2, 2);
 
   const pageCount = doc.bufferedPageRange().count;

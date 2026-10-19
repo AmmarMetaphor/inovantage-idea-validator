@@ -10,7 +10,8 @@ function esc(s: string) {
 }
 
 function consultationHtml(reportRef: string) {
-  return `<p style="font-size:13px;line-height:1.5;color:#0b1a2e;border-top:1px solid #d5deea;padding-top:16px;margin-top:28px">${esc(CONSULTATION.text.replace(CONSULTATION.email, ''))}<a href="${esc(CONSULTATION.mailto(reportRef))}">${esc(CONSULTATION.email)}</a>.</p>`;
+  const [before, after] = CONSULTATION.text.split(CONSULTATION.email);
+  return `<p style="font-size:13px;line-height:1.5;color:#0b1a2e;border-top:1px solid #d5deea;padding-top:16px;margin-top:28px">${esc(before)}<a href="${esc(CONSULTATION.mailto(reportRef))}">${esc(CONSULTATION.email)}</a>${esc(after ?? '')}</p>`;
 }
 
 function consultationText(reportRef: string) {
@@ -58,7 +59,7 @@ export function reportReadyEmail(input: { statusUrl: string; orderRef: string; i
   const subject = `${name} ready: ${input.ideaName}`;
   const text = `Your ${name.toLowerCase()} for "${input.ideaName}" is ready. The PDF is attached.
 
-${input.tier === 'standard' ? `Verdict: ${input.verdict}` : 'It builds on your standard report with the detailed sections you ordered.'}
+${input.tier === 'standard' ? `Assessment: ${input.verdict}. Your readiness score, scorecards and radar are on the report page and in the PDF.` : 'It builds on your standard report with the detailed sections you ordered.'}
 
 Open the interactive web report, download the PDF again any time, ${input.tier === 'standard' ? 'and see the detailed upgrade option, ' : ''}here (private link, no account needed):
 ${input.statusUrl}
@@ -70,7 +71,7 @@ ${consultationText(input.orderRef)}
 ${COMPANY.name} ${COMPANY.productName}`;
   const html = wrap('Your report is ready', `
 <p>Your <strong>${esc(name)}</strong> for <strong>${esc(input.ideaName)}</strong> is ready. The PDF is attached to this email.</p>
-${input.tier === 'standard' ? `<p style="background:#eaf0f7;padding:12px 16px;border-radius:8px"><span style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#4a6a95">Verdict</span><br><strong style="font-family:Georgia,serif;font-size:18px">${esc(input.verdict)}</strong></p>` : ''}
+${input.tier === 'standard' ? `<p style="background:#eaf0f7;padding:12px 16px;border-radius:8px"><span style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#4a6a95">Assessment</span><br><strong style="font-family:Georgia,serif;font-size:18px">${esc(input.verdict)}</strong></p>` : ''}
 ${button(input.statusUrl, 'Open web report and PDF')}
 <p style="font-size:13px;color:#4a6a95">The link is private to you, does not expire, and lets you download the PDF again whenever you need it. Order reference ${esc(input.orderRef)}.</p>
 ${consultationHtml(input.orderRef)}`);

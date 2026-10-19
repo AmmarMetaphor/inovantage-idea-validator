@@ -102,7 +102,7 @@ export function QuestionnairePage() {
       </div>
 
       <form noValidate onSubmit={handleNext}>
-        {pilot && step.id === 'final' && (
+        {pilot && isLast && (
           <Notice tone="info" title="Owner pilot" role="note">
             <p>The server will only deliver pilot reports to the configured pilot address; other addresses are refused.</p>
           </Notice>

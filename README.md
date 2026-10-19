@@ -3,7 +3,7 @@
 A pay-once business idea validation report. A customer answers eight questions
 over three short screens, pays £17, and receives an evidence-based two-page
 report (interactive web version and PDF) on a private link, with an optional
-detailed report upgrade for £35 additional (£52 combined). No account required.
+detailed report upgrade for £34 additional (£51 combined). No account required.
 Markets: UK, US and Australia.
 
 The frontend runs in a labelled **demo mode** out of the box (no backend
