@@ -94,24 +94,42 @@ for (const [name, viewport] of [['mobile', { width: 390, height: 844 }], ['deskt
   page.on('request', onReq);
   await page.getByRole('button', { name: 'Service' }).click();
   const servicePressed = await page.getByRole('button', { name: 'Service' }).getAttribute('aria-pressed');
-  const customers = await page.locator('.preview--customers').innerText();
-  if (servicePressed !== 'true' || !customers.includes('Anxious-dog owners')) { console.error(`example switch to Service failed: pressed=${servicePressed}`); process.exitCode = 1; }
+  const customers = await page.locator('.panel--customers').innerText();
+  if (servicePressed !== 'true' || !customers.includes('Anxious dogs')) { console.error(`example switch to Service failed: pressed=${servicePressed}`); process.exitCode = 1; }
   await page.getByRole('button', { name: 'Software' }).click();
   const week1 = await page.locator('.hero-milestone__action').first().innerText();
   const sceneLabel = await page.locator('.hero-milestone .scene').first().getAttribute('aria-label');
   if (!week1.includes('practice managers') || !/phone|laptop/i.test(sceneLabel ?? '')) { console.error(`example switch to Software did not update the journey: ${week1} / ${sceneLabel}`); process.exitCode = 1; }
-  await page.getByRole('button', { name: 'Pause animation' }).click();
-  const paused = (await page.locator('.hero').getAttribute('data-motion')) === 'off' && (await page.locator('.idea__halo').evaluate((el) => getComputedStyle(el).animationPlayState)) === 'paused';
-  await page.getByRole('button', { name: 'Play animation' }).click();
-  const resumed = (await page.locator('.hero').getAttribute('data-motion')) === 'on';
-  if (!paused || !resumed) { console.error(`pause/play control failed: paused=${paused} resumed=${resumed}`); process.exitCode = 1; }
+  // Illumination: pointer hover lights the stage; keyboard toggles the bulb control; leaving eases back.
+  const stage = page.locator('.hero__stage');
+  const lit = async () => (await stage.getAttribute('data-lit')) === 'true';
+  if (await lit()) { console.error('stage should rest unlit'); process.exitCode = 1; }
+  await stage.hover();
+  const hoverLit = await lit();
+  await page.mouse.move(5, 5);
+  const hoverOff = !(await lit());
+  const bulb = page.getByRole('button', { name: 'Light up the idea illustration' });
+  await bulb.focus();
+  await page.keyboard.press('Enter');
+  const keyOn = (await bulb.getAttribute('aria-pressed')) === 'true' && (await lit());
+  await page.keyboard.press('Space');
+  const keyOff = (await bulb.getAttribute('aria-pressed')) === 'false' && !(await lit());
+  if (!hoverLit || !hoverOff || !keyOn || !keyOff) { console.error(`illumination failed: hover=${hoverLit} off=${hoverOff} keyOn=${keyOn} keyOff=${keyOff}`); process.exitCode = 1; }
+  const stray = await page.evaluate(() => ['SAMPLE REPORT PREVIEW', 'Pause animation', '8 questions', 'Payment follows the form', 'Try an example', 'Showing:', 'No outcome is guaranteed', 'Sample idea score', '72'].filter((t) => document.querySelector('.hero').innerText.includes(t)));
+  if (stray.length) { console.error(`removed hero text still present: ${stray.join(' | ')}`); process.exitCode = 1; }
   page.off('request', onReq);
   if (apiHits.length) { console.error(`homepage interactions made API requests: ${apiHits.join(', ')}`); process.exitCode = 1; }
   await checkOverflow(page, `${name} landing`);
   await page.getByRole('button', { name: 'Product' }).click();
   await page.addStyleTag({ content: '.site-header { position: static !important; }' });
+  await page.mouse.move(5, 5);
   await page.locator('.hero').screenshot({ path: join(out, `${name}-hero.png`) });
   shots.push(join(out, `${name}-hero.png`));
+  await stage.hover();
+  await page.waitForTimeout(700);
+  await page.locator('.hero__stage').screenshot({ path: join(out, `${name}-hero-lit.png`) });
+  shots.push(join(out, `${name}-hero-lit.png`));
+  await page.mouse.move(5, 5);
   await page.goto(`${base}/`, { waitUntil: 'networkidle' });
   await page.goto(`${base}/validate/1`, { waitUntil: 'networkidle' });
   await page.getByRole('button', { name: 'Continue' }).click();
@@ -202,13 +220,16 @@ for (const [name, viewport] of [['mobile', { width: 390, height: 844 }], ['deskt
   page.on('pageerror', (e) => { console.error(`pageerror on ${page.url()}: ${e.message}`); process.exitCode = 1; });
   await mockApi(page);
   await page.goto(`http://localhost:${PORT}/`, { waitUntil: 'networkidle' });
-  const label = await page.locator('.hero__motion').innerText();
-  const dm = await page.locator('.hero').getAttribute('data-motion');
-  if (label !== 'Play animation' || dm !== 'off') { console.error(`reduced motion default failed: label=${label} data-motion=${dm}`); process.exitCode = 1; }
   await checkOverflow(page, 'tablet landing');
   const p = join(out, 'tablet-landing.png');
   await page.screenshot({ path: p, fullPage: true });
   shots.push(p);
+  // Lit via keyboard under reduced motion: the glow changes, nothing orbits.
+  await page.getByRole('button', { name: 'Light up the idea illustration' }).focus();
+  await page.keyboard.press('Enter');
+  const rmLit = (await page.locator('.hero__stage').getAttribute('data-lit')) === 'true';
+  const dotAnim = await page.locator('.idea__dot').first().evaluate((el) => getComputedStyle(el).animationName);
+  if (!rmLit || dotAnim !== 'none') { console.error(`reduced motion failed: lit=${rmLit} dotAnimation=${dotAnim}`); process.exitCode = 1; }
   await ctx.close();
 }
 await browser.close();

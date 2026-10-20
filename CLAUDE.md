@@ -140,8 +140,11 @@ content must be labelled as demo or illustrative in the UI.
   `scoring.ts`, the chart is labelled illustrative, the journey scenes come
   from `journey.ts`, and the process strip explains the steps without any
   status. Selecting an example changes local state only: no API call, no
-  submission. Continuous motion is SVG/CSS only, pauses offscreen, in hidden
-  tabs and via the Pause control, and starts paused under reduced motion.
+  submission. The illustration rests still: it lights up on pointer hover
+  or via the keyboard/tap bulb toggle (`aria-pressed`), decorative movement
+  runs only while lit, on screen and in a visible tab, and under reduced
+  motion only the glow changes. The hero shows no sample score, price line
+  or disclaimer; those belong to the sample report and the report pages.
 - The sample report is for a made-up business and uses bracketed placeholders
   where a real report would cite sources. Keep the "Illustrative content, not
   research" notice.
