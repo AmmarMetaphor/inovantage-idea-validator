@@ -62,6 +62,16 @@
   color: var(--color-ink-900);
 }
 
+.btn--teal {
+  background: var(--color-teal-300);
+  color: var(--color-ink-900);
+}
+
+.btn--teal:hover {
+  background: var(--color-teal-200);
+  color: var(--color-ink-900);
+}
+
 .btn--secondary {
   background: var(--color-surface);
   color: var(--color-ink-800);

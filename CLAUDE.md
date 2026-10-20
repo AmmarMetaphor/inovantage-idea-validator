@@ -54,7 +54,7 @@ downloadable PDF. No customer account exists or is planned.
 
 | Route                  | Component                 | Purpose                                      |
 | ---------------------- | ------------------------- | -------------------------------------------- |
-| `/`                    | `LandingPage`             | Branded landing page, pricing, FAQ           |
+| `/`                    | `LandingPage`             | Animated hero (`components/hero/Hero.tsx`), pricing, FAQ |
 | `/validate/:step`      | `QuestionnairePage`       | Eight questions over three steps (1–3)       |
 | `/review`              | `ReviewPage`              | Answer review, email confirmation, checkout start |
 | `/checkout`            | `CheckoutPage`            | Simulated checkout (demo) / cancelled return |
@@ -133,6 +133,15 @@ content must be labelled as demo or illustrative in the UI.
 
 - Do not invent testimonials, customer names, market statistics, success rates
   or guarantees. The landing page and sample report contain none.
+- The homepage hero (`src/components/hero/Hero.tsx`, `src/styles/hero.css`)
+  is presentation only. Its three selectable examples live in
+  `src/content/hero-examples.ts` (invented businesses, no statistics), the
+  "72/100" is a fixed illustrative figure labelled as such and never touches
+  `scoring.ts`, the chart is labelled illustrative, the journey scenes come
+  from `journey.ts`, and the process strip explains the steps without any
+  status. Selecting an example changes local state only: no API call, no
+  submission. Continuous motion is SVG/CSS only, pauses offscreen, in hidden
+  tabs and via the Pause control, and starts paused under reduced motion.
 - The sample report is for a made-up business and uses bracketed placeholders
   where a real report would cite sources. Keep the "Illustrative content, not
   research" notice.

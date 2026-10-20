@@ -26,6 +26,12 @@
   --color-sand-200: #f1e9d8;
   --color-sand-100: #f8f4ea;
 
+  --color-teal-200: #8eeadf;       /* provisional: hero highlight on dark */
+  --color-teal-300: #5fded0;
+  --color-teal-500: #1f7f7a;
+  --color-amber-300: #f2c35b;      /* provisional: hero lightbulb */
+  --color-amber-500: #c8923a;
+
   --color-paper: #fcfbf8;          /* page background: warm off-white */
   --color-surface: #ffffff;
   --color-surface-muted: #f6f4ef;

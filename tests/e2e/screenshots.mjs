@@ -59,6 +59,24 @@ async function mockApi(page, { stage = 'email_sent', failed = false } = {}) {
   });
 }
 
+async function checkOverflow(page, label) {
+  const overflow = await page.evaluate(() => {
+    const cw = document.documentElement.clientWidth;
+    if (document.documentElement.scrollWidth <= cw) return null;
+    const out = [];
+    for (const el of document.querySelectorAll('body *')) {
+      const r = el.getBoundingClientRect();
+      if (r.right > cw + 1 && !el.closest('.report-nav, .table-scroll')) out.push(`${el.tagName.toLowerCase()}.${String(el.className).slice(0, 40)} right=${Math.round(r.right)}`);
+    }
+    // Ancestor chain of the first offender, for diagnosis.
+    const first = [...document.querySelectorAll('body *')].find((el) => el.getBoundingClientRect().right > cw + 1 && !el.closest('.report-nav, .table-scroll'));
+    const chain = [];
+    for (let el = first; el && el !== document.body; el = el.parentElement) chain.push(`${el.tagName.toLowerCase()}.${String(el.className).split(' ')[0]}=${Math.round(el.getBoundingClientRect().width)}`);
+    return [...out.slice(0, 6), 'chain: ' + chain.join(' < ')];
+  });
+  if (overflow) { console.error(`horizontal overflow at ${label}: ${overflow.join(' | ')}`); process.exitCode = 1; }
+}
+
 const shots = [];
 for (const [name, viewport] of [['mobile', { width: 390, height: 844 }], ['desktop', { width: 1360, height: 900 }]]) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: 1 });
@@ -70,6 +88,31 @@ for (const [name, viewport] of [['mobile', { width: 390, height: 844 }], ['deskt
 
   await page.goto(`${base}/`, { waitUntil: 'networkidle' });
   await snap('landing');
+  // Homepage hero: example switching, pause/play, no API requests from interactions.
+  const apiHits = [];
+  const onReq = (r) => { if (r.url().includes('/api/')) apiHits.push(r.url()); };
+  page.on('request', onReq);
+  await page.getByRole('button', { name: 'Service' }).click();
+  const servicePressed = await page.getByRole('button', { name: 'Service' }).getAttribute('aria-pressed');
+  const customers = await page.locator('.preview--customers').innerText();
+  if (servicePressed !== 'true' || !customers.includes('Anxious-dog owners')) { console.error(`example switch to Service failed: pressed=${servicePressed}`); process.exitCode = 1; }
+  await page.getByRole('button', { name: 'Software' }).click();
+  const week1 = await page.locator('.hero-milestone__action').first().innerText();
+  const sceneLabel = await page.locator('.hero-milestone .scene').first().getAttribute('aria-label');
+  if (!week1.includes('practice managers') || !/phone|laptop/i.test(sceneLabel ?? '')) { console.error(`example switch to Software did not update the journey: ${week1} / ${sceneLabel}`); process.exitCode = 1; }
+  await page.getByRole('button', { name: 'Pause animation' }).click();
+  const paused = (await page.locator('.hero').getAttribute('data-motion')) === 'off' && (await page.locator('.idea__halo').evaluate((el) => getComputedStyle(el).animationPlayState)) === 'paused';
+  await page.getByRole('button', { name: 'Play animation' }).click();
+  const resumed = (await page.locator('.hero').getAttribute('data-motion')) === 'on';
+  if (!paused || !resumed) { console.error(`pause/play control failed: paused=${paused} resumed=${resumed}`); process.exitCode = 1; }
+  page.off('request', onReq);
+  if (apiHits.length) { console.error(`homepage interactions made API requests: ${apiHits.join(', ')}`); process.exitCode = 1; }
+  await checkOverflow(page, `${name} landing`);
+  await page.getByRole('button', { name: 'Product' }).click();
+  await page.addStyleTag({ content: '.site-header { position: static !important; }' });
+  await page.locator('.hero').screenshot({ path: join(out, `${name}-hero.png`) });
+  shots.push(join(out, `${name}-hero.png`));
+  await page.goto(`${base}/`, { waitUntil: 'networkidle' });
   await page.goto(`${base}/validate/1`, { waitUntil: 'networkidle' });
   await page.getByRole('button', { name: 'Continue' }).click();
   await page.waitForSelector('.error-summary');
@@ -149,21 +192,23 @@ for (const [name, viewport] of [['mobile', { width: 390, height: 844 }], ['deskt
   await page.addStyleTag({ content: '.site-header, .report-nav { position: static !important; }' });
   await journey.screenshot({ path: join(out, `${name}-journey.png`) });
   shots.push(join(out, `${name}-journey.png`));
-  const overflow = await page.evaluate(() => {
-    const cw = document.documentElement.clientWidth;
-    if (document.documentElement.scrollWidth <= cw) return null;
-    const out = [];
-    for (const el of document.querySelectorAll('body *')) {
-      const r = el.getBoundingClientRect();
-      if (r.right > cw + 1 && !el.closest('.report-nav, .table-scroll')) out.push(`${el.tagName.toLowerCase()}.${String(el.className).slice(0, 40)} right=${Math.round(r.right)}`);
-    }
-    // Ancestor chain of the first offender, for diagnosis.
-    const first = [...document.querySelectorAll('body *')].find((el) => el.getBoundingClientRect().right > cw + 1 && !el.closest('.report-nav, .table-scroll'));
-    const chain = [];
-    for (let el = first; el && el !== document.body; el = el.parentElement) chain.push(`${el.tagName.toLowerCase()}.${String(el.className).split(' ')[0]}=${Math.round(el.getBoundingClientRect().width)}`);
-    return [...out.slice(0, 6), 'chain: ' + chain.join(' < ')];
-  });
-  if (overflow) { console.error(`horizontal overflow at ${name}: ${overflow.join(' | ')}`); process.exitCode = 1; }
+  await checkOverflow(page, `${name} report`);
+  await ctx.close();
+}
+// Tablet width with reduced motion requested: animation starts paused, composition intact.
+{
+  const ctx = await browser.newContext({ viewport: { width: 834, height: 1112 }, deviceScaleFactor: 1, reducedMotion: 'reduce' });
+  const page = await ctx.newPage();
+  page.on('pageerror', (e) => { console.error(`pageerror on ${page.url()}: ${e.message}`); process.exitCode = 1; });
+  await mockApi(page);
+  await page.goto(`http://localhost:${PORT}/`, { waitUntil: 'networkidle' });
+  const label = await page.locator('.hero__motion').innerText();
+  const dm = await page.locator('.hero').getAttribute('data-motion');
+  if (label !== 'Play animation' || dm !== 'off') { console.error(`reduced motion default failed: label=${label} data-motion=${dm}`); process.exitCode = 1; }
+  await checkOverflow(page, 'tablet landing');
+  const p = join(out, 'tablet-landing.png');
+  await page.screenshot({ path: p, fullPage: true });
+  shots.push(p);
   await ctx.close();
 }
 await browser.close();

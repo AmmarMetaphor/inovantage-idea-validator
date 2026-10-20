@@ -1,10 +1,11 @@
 import { Link } from 'react-router-dom';
 import { ButtonLink } from '@/components/Button';
 import { usePageTitle } from '@/components/usePageTitle';
-import { SampleDashboard } from '@/components/report/SampleDashboard';
+import { Hero } from '@/components/hero/Hero';
 import { COMBINED_TOTAL, DELIVERY_COPY, MARKETS, PRICE, PRODUCTS, UPGRADE_INCLUDES } from '@/config/product';
 import '@/styles/landing.css';
 import '@/styles/web-report.css';
+import '@/styles/hero.css';
 
 const JOURNEY = [
   { title: 'Share your idea', body: 'Eight short questions over three screens. “Not sure yet” is a valid answer.' },
@@ -43,29 +44,7 @@ export function LandingPage() {
 
   return (
     <div className="page-enter">
-      <section className="hero section--dark">
-        <div className="container hero__inner">
-          <div className="hero__copy">
-            <span className="eyebrow">Idea validation reports · from {PRICE.display}</span>
-            <h1>Give your business idea a clearer next step.</h1>
-            <p className="lead">
-              Explore its strengths, understand your market and discover practical ways to improve your chances.
-            </p>
-            <div className="hero__actions">
-              <ButtonLink to="/validate" variant="accent" size="lg">Explore my idea</ButtonLink>
-              <ButtonLink to="/sample-report" variant="secondary" size="lg">See a sample report</ButtonLink>
-            </div>
-            <ul className="hero__facts" aria-label="Key facts">
-              <li>{PRICE.display} one-time, no account</li>
-              <li>UK, US and Australia</li>
-              <li>Sourced evidence, labelled assumptions</li>
-            </ul>
-          </div>
-          <div className="hero__panel">
-            <SampleDashboard />
-          </div>
-        </div>
-      </section>
+      <Hero />
 
       <section id="how-it-works" className="section">
         <div className="container">
