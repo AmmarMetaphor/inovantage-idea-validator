@@ -146,7 +146,7 @@ for (const [name, viewport] of [['mobile', { width: 390, height: 844 }], ['deskt
   await page.keyboard.press('Space');
   await page.locator('.milestone__toggle').nth(2).click();
   // The sticky site header would be stitched into a tall element capture; unstick it for the shot.
-  await page.addStyleTag({ content: '.site-header { position: static !important; }' });
+  await page.addStyleTag({ content: '.site-header, .report-nav { position: static !important; }' });
   await journey.screenshot({ path: join(out, `${name}-journey.png`) });
   shots.push(join(out, `${name}-journey.png`));
   const overflow = await page.evaluate(() => {

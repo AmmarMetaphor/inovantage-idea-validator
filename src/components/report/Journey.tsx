@@ -1,24 +1,29 @@
 import { useId, useState } from 'react';
-import { JOURNEY_PHASES, PLAN_CAVEAT, PLAN_LABEL, SCENE_LABELS, sceneFor, type PhaseId, type SceneFamily } from '@/config/journey';
+import { JOURNEY_PHASES, PLAN_CAVEAT, PLAN_EYEBROW, PLAN_LABEL, PLAN_TIMING, SCENE_LABELS, sceneFor, type PhaseId, type SceneFamily } from '@/config/journey';
 import type { Plan } from './types';
 
-/** One original line-art scene as inline SVG; colours come from CSS classes so themes stay in tokens. */
+/**
+ * One original flat-style scene as inline SVG. Colours come from CSS classes
+ * (tokens), the geometry from the vetted library in src/config/journey.ts;
+ * nothing here is model output.
+ */
 export function SceneArt({ family, phase, className }: { family: SceneFamily; phase: PhaseId; className?: string }) {
   const scene = sceneFor(family, phase);
   return (
     <svg viewBox={scene.viewBox} className={`scene ${className ?? ''}`} role="img" aria-label={SCENE_LABELS[family][phase]} focusable="false">
       {scene.paths.map((p, i) => (
-        <path key={i} d={p.d} className={`scene__${p.role}`} strokeWidth={p.width ?? 2} />
+        <path key={i} d={p.d} className={`${p.fill ? `scene__fill-${p.fill}` : ''} ${p.stroke ? `scene__stroke-${p.stroke}` : ''}`.trim()} strokeWidth={p.stroke ? (p.width ?? 2) : undefined} />
       ))}
     </svg>
   );
 }
 
 /**
- * "Your first four weeks in action": four illustrated milestones on a curved
- * path. Desktop: horizontal; mobile: stacked along a vertical path. Each
- * milestone is a real button that expands its detail (Enter/Space work
- * natively); the action and measure are always visible without hover.
+ * "Your first four weeks in action": four illustrated milestones joined by a
+ * flowing dotted path. Desktop: a horizontal row with the path running
+ * through the numbered badges under the scenes; mobile: a vertical timeline.
+ * Each milestone's action and measure are always visible; a real button
+ * expands the detail (Enter and Space work natively).
  */
 export function Journey({ plan, expansions, ideaName }: { plan: Plan; expansions?: string[]; ideaName?: string }) {
   const id = useId();
@@ -26,18 +31,18 @@ export function Journey({ plan, expansions, ideaName }: { plan: Plan; expansions
   return (
     <section className="journey" id="plan" aria-labelledby={`${id}-h`}>
       <div className="section-title">
-        <p className="eyebrow eyebrow--gold">Suggested plan. Adapt the timing to your circumstances.</p>
-        <h2 id={`${id}-h`}>{PLAN_LABEL}</h2>
-        <p className="muted">
-          Four suggested weeks to learn the most about {ideaName ? ideaName : 'this idea'} for the least money. Select a milestone to see what to record and how the result shapes the next decision.
+        <p className="eyebrow journey__eyebrow">{PLAN_EYEBROW}</p>
+        <h2 id={`${id}-h`} className="journey__title">{PLAN_LABEL}</h2>
+        <p className="muted journey__intro">
+          Four suggested weeks to learn the most about {ideaName ? ideaName : 'this idea'} for the least money. Select a milestone for what to record and how the result shapes the next decision.
         </p>
       </div>
       <ol className="journey__track" aria-label="Four weekly milestones">
-        <svg className="journey__path" viewBox="0 0 1200 120" preserveAspectRatio="none" aria-hidden="true" focusable="false">
-          <path d="M 150 56 C 250 16, 350 96, 450 56 S 650 16, 750 56 S 950 96, 1050 56" className="journey__curve" />
+        <svg className="journey__path" viewBox="0 0 1200 100" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+          <path d="M -20 70 C 60 70, 100 20, 150 50 S 300 90, 450 50 S 600 10, 750 50 S 900 90, 1050 50 S 1180 20, 1220 40" className="journey__curve" />
         </svg>
-        <svg className="journey__path journey__path--vertical" viewBox="0 0 60 1000" preserveAspectRatio="none" aria-hidden="true" focusable="false">
-          <path d="M 30 0 C 55 150, 5 300, 30 450 S 55 750, 30 1000" className="journey__curve" />
+        <svg className="journey__path journey__path--vertical" viewBox="0 0 40 1000" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+          <path d="M 20 0 C 32 150, 8 300, 20 450 S 32 750, 20 1000" className="journey__curve" />
         </svg>
         {plan.weeks.map((w, i) => {
           const phase = JOURNEY_PHASES.find((p) => p.id === w.phase) ?? JOURNEY_PHASES[i];
@@ -47,10 +52,13 @@ export function Journey({ plan, expansions, ideaName }: { plan: Plan; expansions
             <li key={w.week} className={`milestone milestone--${w.phase}`}>
               <div className="milestone__art">
                 <SceneArt family={plan.scene_family} phase={w.phase} />
-                <span className="milestone__num" aria-hidden="true">{w.week}</span>
+              </div>
+              <div className="milestone__badge">
+                <span className="milestone__num" aria-hidden="true">{String(w.week).padStart(2, '0')}</span>
+                <span className="milestone__week">Week {w.week}</span>
               </div>
               <div className="milestone__text">
-                <p className="milestone__week">Week {w.week} · {phase.title}</p>
+                <h3 className="milestone__title">{phase.title}</h3>
                 <p className="milestone__action">{w.action}</p>
                 <p className="milestone__measure"><strong>Record:</strong> {w.measure}</p>
                 <button type="button" className="milestone__toggle" aria-expanded={expanded} aria-controls={panelId} onClick={() => setOpen(expanded ? null : i)}>
@@ -67,7 +75,7 @@ export function Journey({ plan, expansions, ideaName }: { plan: Plan; expansions
         })}
       </ol>
       {plan.caveat && <p className="journey__caveat"><strong>Timing note:</strong> {plan.caveat}</p>}
-      <p className="small muted">{PLAN_CAVEAT} A four-week period is a suggested starting point, not a launch schedule; nothing here promises sales, demand or a change in score.</p>
+      <p className="small muted journey__footer"><strong>{PLAN_CAVEAT}</strong> {PLAN_TIMING} Nothing here promises sales, demand or a change in score.</p>
     </section>
   );
 }

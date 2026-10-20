@@ -17,7 +17,7 @@
 */
 import PDFDocument from 'pdfkit';
 import { chartProvenance, deriveHeadline, itemsForGroup, toStrengthen, type Headline } from '../../src/config/headline';
-import { JOURNEY_PHASES, PLAN_CAVEAT, PLAN_LABEL, SCENE_COLOURS, sceneFor, type SceneFamily } from '../../src/config/journey';
+import { JOURNEY_PHASES, PATH_COLOUR, PLAN_CAVEAT, PLAN_EYEBROW, PLAN_LABEL, PLAN_TIMING, SCENE_COLOURS, sceneFor, type SceneFamily } from '../../src/config/journey';
 import { COMBINED_TOTAL, COMPANY, CONSULTATION, PRODUCTS, UPGRADE_INCLUDES } from '../../src/config/product';
 import { CRITERIA, GROUPS, SCORE_DISCLAIMER, SCORE_LABEL, SCORE_RUBRIC, criterion, scoreTone, type Tone } from '../../src/config/scoring';
 import { computeFinancials, formatMoney, type FinancialResult } from './finance';
@@ -317,54 +317,59 @@ function drawScene(doc: Doc, family: SceneFamily, phase: (typeof JOURNEY_PHASES)
   doc.translate(x, y).scale(k);
   for (const p of scene.paths) {
     doc.path(p.d).lineCap('round').lineJoin('round');
-    if (p.role === 'highlightFill') doc.fill(SCENE_COLOURS.highlight);
-    else if (p.role === 'accentFill') doc.fill(SCENE_COLOURS.accent);
-    else doc.lineWidth(p.width ?? 2).strokeColor(p.role === 'highlight' ? SCENE_COLOURS.highlight : p.role === 'accent' ? SCENE_COLOURS.accent : SCENE_COLOURS.outline).stroke();
+    if (p.fill && p.stroke) doc.lineWidth(p.width ?? 1.6).fillAndStroke(SCENE_COLOURS[p.fill], SCENE_COLOURS[p.stroke]);
+    else if (p.fill) doc.fill(SCENE_COLOURS[p.fill]);
+    else doc.lineWidth(p.width ?? 2).strokeColor(SCENE_COLOURS[p.stroke ?? 'navy']).stroke();
   }
   doc.restore();
 }
 
 /**
- * The four milestones in a row with a curved dashed path behind them; text
- * sits under each scene with fixed budgets (week label, action, measure).
- * Returns the height used.
+ * The four milestones in a row, matching the web layout: a scene on top, a
+ * numbered badge row with the flowing dotted path running behind it, then
+ * the phase title, the action and the measure under each scene. Budgets are
+ * fixed so the standard report stays at two pages. Returns the height used.
  */
 function journeyRow(doc: Doc, plan: Plan, x: number, y: number, w: number, o: { sceneW?: number; actionLines?: number; measureLines?: number } = {}): number {
   const sceneW = o.sceneW ?? 66;
   const sceneH = sceneW * 0.75;
   const colW = w / 4;
+  const pad = 4;
   // Budgets are whole lines so pdfkit truncates at a line boundary and shows
   // its ellipsis rather than cutting a sentence silently.
-  const actionLH = doc.font('Helvetica-Bold').fontSize(7).currentLineHeight(true) + 0.8;
+  const actionLH = doc.font('Helvetica').fontSize(7.2).currentLineHeight(true) + 0.8;
   const measureLH = doc.font('Helvetica').fontSize(6.4).currentLineHeight(true) + 0.6;
-  const actionH = Math.ceil((o.actionLines ?? 4) * actionLH) + 0.5;
+  const actionH = Math.ceil((o.actionLines ?? 3) * actionLH) + 0.5;
   const measureH = Math.ceil((o.measureLines ?? 2) * measureLH) + 0.5;
-  // Curved path through the four scene centres.
-  const cxs = plan.weeks.map((_, i) => x + colW * i + colW / 2);
-  const cy = y + sceneH / 2 + 4;
-  doc.save().dash(3, { space: 3 }).lineWidth(1.2).strokeColor(SCENE_COLOURS.highlight);
-  doc.moveTo(cxs[0], cy);
+  const badgeR = 7;
+  const badgeY = y + sceneH + 6 + badgeR;
+  const titleY = badgeY + badgeR + 5;
+  const actionY = titleY + 13;
+  const measureY = actionY + actionH + 2;
+  // Dotted path flowing through the badge row (behind the badges).
+  const bxs = plan.weeks.map((_, i) => x + colW * i + pad + badgeR);
+  doc.save().dash(0.01, { space: 4.2 }).lineCap('round').lineWidth(2).strokeColor(PATH_COLOUR);
+  doc.moveTo(x - 2, badgeY + 10).bezierCurveTo(bxs[0] - 30, badgeY + 10, bxs[0] - 20, badgeY - 10, bxs[0], badgeY);
   for (let i = 0; i < 3; i += 1) {
-    const dir = i % 2 === 0 ? -1 : 1;
-    doc.bezierCurveTo(cxs[i] + colW * 0.3, cy + dir * 16, cxs[i + 1] - colW * 0.3, cy + dir * 16, cxs[i + 1], cy);
+    const dir = i % 2 === 0 ? 1 : -1;
+    doc.bezierCurveTo(bxs[i] + colW * 0.3, badgeY + dir * 14, bxs[i + 1] - colW * 0.3, badgeY - dir * 14, bxs[i + 1], badgeY);
   }
+  doc.bezierCurveTo(bxs[3] + colW * 0.3, badgeY + 12, x + w - 10, badgeY - 2, x + w + 2, badgeY - 8);
   doc.stroke().undash().restore();
   plan.weeks.forEach((wk, i) => {
-    const cx = cxs[i];
-    const sx = cx - sceneW / 2;
-    // Open space around the scene: a soft disc, not a box.
-    doc.circle(cx, cy, sceneW * 0.56).fill('#ffffff');
-    drawScene(doc, plan.scene_family, wk.phase, sx, y + 4, sceneW);
-    doc.circle(sx + 6, y + 8, 7).fill(SCENE_COLOURS.outline);
-    doc.font('Helvetica-Bold').fontSize(7).fillColor('#ffffff').text(String(wk.week), sx + 1, y + 5, { width: 10, align: 'center', lineBreak: false });
+    const cx = x + colW * i + colW / 2;
+    drawScene(doc, plan.scene_family, wk.phase, cx - sceneW / 2, y, sceneW);
+    const bx = bxs[i];
+    doc.circle(bx, badgeY, badgeR).fill(SCENE_COLOURS.teal);
+    doc.font('Helvetica-Bold').fontSize(6).fillColor('#ffffff').text(String(wk.week).padStart(2, '0'), bx - badgeR, badgeY - 3.2, { width: badgeR * 2, align: 'center', lineBreak: false });
+    doc.font('Helvetica-Bold').fontSize(6).fillColor(MUTED).text(`WEEK ${wk.week}`, bx + badgeR + 5, badgeY - 3.2, { characterSpacing: 0.6, lineBreak: false });
     const phase = JOURNEY_PHASES.find((p) => p.id === wk.phase) ?? JOURNEY_PHASES[i];
-    let ty = y + sceneH + 10;
-    doc.font('Helvetica-Bold').fontSize(6.2).fillColor(SCENE_COLOURS.highlight).text(`WEEK ${wk.week} · ${phase.title.toUpperCase()}`, x + colW * i + 4, ty, { width: colW - 8, characterSpacing: 0.6, lineBreak: false });
-    ty += 10;
-    ty += box(doc, wk.action, x + colW * i + 4, ty, colW - 8, actionH, { size: 7, font: 'Helvetica-Bold', lineGap: 0.8 }) + 2;
-    box(doc, `Record: ${wk.measure}`, x + colW * i + 4, ty, colW - 8, measureH, { size: 6.4, color: MUTED, lineGap: 0.6 });
+    const tx = x + colW * i + pad;
+    doc.font('Helvetica-Bold').fontSize(10.5).fillColor(SCENE_COLOURS.navy).text(phase.title, tx, titleY, { width: colW - 2 * pad, lineBreak: false });
+    box(doc, wk.action, tx, actionY, colW - 2 * pad, actionH, { size: 7.2, color: INK, lineGap: 0.8 });
+    box(doc, `Record: ${wk.measure}`, tx, measureY, colW - 2 * pad, measureH, { size: 6.4, color: MUTED, lineGap: 0.6 });
   });
-  return sceneH + 10 + 10 + actionH + 2 + measureH + 2;
+  return measureY + measureH + 2 - y;
 }
 
 /* ---------------------------------------------------------------------------
@@ -479,11 +484,11 @@ export async function renderStandardPdf(report: StandardReport, meta: PdfMeta): 
 
   // Four-week journey (only when the report carries a validated plan).
   if (report.plan) {
-    doc.font('Times-Roman').fontSize(12.5).fillColor(NAVY).text(PLAN_LABEL, M, y, { lineBreak: false });
-    doc.font('Helvetica-Oblique').fontSize(6.4).fillColor(MUTED).text(PLAN_CAVEAT, M, y + 3, { width: CW, align: 'right', lineBreak: false });
-    doc.moveTo(M, y + 16).lineTo(M + CW, y + 16).lineWidth(0.6).strokeColor(GOLD).stroke();
-    y += 22;
-    y += journeyRow(doc, report.plan, M, y, CW, { sceneW: 62, actionLines: 4, measureLines: 2 });
+    doc.font('Helvetica-Bold').fontSize(5.8).fillColor(SCENE_COLOURS.teal).text(PLAN_EYEBROW.toUpperCase(), M, y, { characterSpacing: 0.8, lineBreak: false });
+    doc.font('Times-Bold').fontSize(15).fillColor(NAVY).text(PLAN_LABEL, M, y + 7, { lineBreak: false });
+    doc.font('Helvetica-Oblique').fontSize(6.4).fillColor(MUTED).text(PLAN_CAVEAT, M, y + 13, { width: CW, align: 'right', lineBreak: false });
+    y += 28;
+    y += journeyRow(doc, report.plan, M, y, CW, { sceneW: 72, actionLines: 4, measureLines: 2 });
     if (report.plan.caveat) y += box(doc, `Timing note: ${report.plan.caveat}`, M, y, CW, 9, { size: 6.2, color: '#8a5a00' }) + 2;
     y += 4;
   }
@@ -630,10 +635,10 @@ export async function renderDetailedPdf(report: DetailedReport, meta: PdfMeta): 
     if (s.id === 'roadmap' && report.plan) {
       if (doc.y > A4.h - 260) doc.addPage();
       h2(PLAN_LABEL);
-      doc.font('Helvetica-Oblique').fontSize(8).fillColor(MUTED).text(PLAN_CAVEAT, { width });
+      doc.font('Helvetica-Oblique').fontSize(8).fillColor(MUTED).text(`${PLAN_CAVEAT} ${PLAN_TIMING}`, { width });
       doc.moveDown(0.4);
       const top = doc.y;
-      const used = journeyRow(doc, report.plan, M, top, width, { sceneW: 72, actionLines: 5, measureLines: 3 });
+      const used = journeyRow(doc, report.plan, M, top, width, { sceneW: 80, actionLines: 4, measureLines: 3 });
       doc.y = top + used + 6;
       doc.x = M;
       report.plan.weeks.forEach((wk, i) => {

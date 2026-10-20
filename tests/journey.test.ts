@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { deriveHeadline } from '../src/config/headline';
-import { JOURNEY_PHASES, SCENE_FAMILIES, sceneFamilyFor, sceneFor } from '../src/config/journey';
+import { JOURNEY_PHASES, SCENE_FAMILIES, SCENE_FILLS, SCENE_STROKES, sceneFamilyFor, sceneFor } from '../src/config/journey';
 import { mapPlan, type MappingDiagnostics } from '../netlify/lib/generation-schema';
 import { renderDetailedPdf, renderStandardPdf } from '../netlify/lib/pdf';
 import { StandardReportSchema } from '../netlify/lib/report-schema';
@@ -23,15 +23,21 @@ describe('Four-week journey: artwork chosen from metadata, never from model text
     expect(sceneFamilyFor(undefined, undefined)).toBe('generic');
   });
 
-  it('every family has four original scenes with only outline, highlight and accent roles', () => {
+  it('every family has four original scenes drawn only from the vetted palette', () => {
     for (const f of SCENE_FAMILIES) {
       for (const p of JOURNEY_PHASES) {
         const s = sceneFor(f, p.id);
-        expect(s.paths.length).toBeGreaterThanOrEqual(4);
+        expect(s.paths.length).toBeGreaterThanOrEqual(6);
         for (const path of s.paths) {
-          expect(['outline', 'highlight', 'accent', 'highlightFill', 'accentFill']).toContain(path.role);
+          expect(path.fill || path.stroke).toBeTruthy();
+          if (path.fill) expect(SCENE_FILLS).toContain(path.fill);
+          if (path.stroke) expect(SCENE_STROKES).toContain(path.stroke);
           expect(path.d).toMatch(/^[MLHVCSQTAZmlhvcsqtaz0-9 .,-]+$/); // plain path data, no markup
         }
+        // Each scene uses the three brand colours: navy outlines, teal highlights, amber accents.
+        const used = new Set<string>();
+        for (const x of s.paths) { if (x.fill) used.add(x.fill); if (x.stroke) used.add(x.stroke); }
+        for (const c of ['navy', 'teal', 'amber']) expect(used.has(c)).toBe(true);
       }
     }
   });

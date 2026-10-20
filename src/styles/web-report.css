@@ -1067,13 +1067,23 @@
 
 /* ---- Illustrated four-week journey -------------------------------------- */
 .journey {
-  margin-top: var(--space-12);
-  padding-top: var(--space-6);
-  border-top: 2px solid var(--color-sand-300);
+  scroll-margin-top: 4.5rem;
+  --journey-art-h: 8.5rem;
+  --journey-rail: 2.5rem;
 }
 
-.journey {
-  scroll-margin-top: 4.5rem;
+.journey__eyebrow {
+  color: var(--illus-teal);
+}
+
+.journey .section-title .journey__title {
+  font-size: clamp(1.75rem, 3.4vw, 2.5rem);
+  line-height: 1.1;
+  color: var(--illus-navy);
+}
+
+.journey__intro {
+  max-width: 44rem;
 }
 
 .journey__track {
@@ -1082,49 +1092,83 @@
   padding: 0;
   margin: var(--space-6) 0 var(--space-4);
   display: grid;
-  gap: var(--space-6);
+  gap: var(--space-7);
   grid-template-columns: 1fr;
 }
 
 .journey__path {
   position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
   pointer-events: none;
   display: none;
 }
 
+/* Mobile: a vertical dotted rail behind the numbered badges. */
 .journey__path--vertical {
   display: block;
-  width: 3rem;
-  left: 1.25rem;
+  top: 0;
+  left: 0;
+  width: var(--journey-rail);
   height: 100%;
 }
 
 .journey__curve {
   fill: none;
-  stroke: var(--chart-2);
-  stroke-width: 3;
-  stroke-dasharray: 8 8;
+  stroke: var(--illus-path);
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-dasharray: 0.1 10;
   vector-effect: non-scaling-stroke;
 }
 
 .milestone {
   position: relative;
   display: grid;
-  grid-template-columns: 5.5rem 1fr;
-  gap: var(--space-4);
+  grid-template-columns: var(--journey-rail) 1fr;
+  grid-template-areas:
+    'badge badge'
+    '. art'
+    '. text';
+  column-gap: var(--space-4);
+  row-gap: var(--space-2);
   align-items: start;
   min-width: 0;
 }
 
-.milestone__art {
+.milestone__badge {
+  grid-area: badge;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
   position: relative;
-  width: 5.5rem;
-  background: var(--color-surface);
+  z-index: 1;
+}
+
+.milestone__num {
+  flex: none;
+  width: var(--journey-rail);
+  height: var(--journey-rail);
   border-radius: 50%;
-  padding: var(--space-2);
+  background: var(--illus-teal);
+  color: #fff;
+  font-weight: 700;
+  font-size: var(--text-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 0 4px var(--color-surface);
+}
+
+.milestone__week {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  color: var(--color-text-muted);
+  font-weight: 700;
+}
+
+.milestone__art {
+  grid-area: art;
+  width: min(100%, 11rem);
 }
 
 .scene {
@@ -1135,49 +1179,39 @@
 
 .scene path {
   fill: none;
+  stroke: none;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 
-.scene__outline { stroke: var(--chart-1); }
-.scene__highlight { stroke: var(--chart-3); }
-.scene__accent { stroke: var(--chart-2); }
-.scene__highlightFill { fill: var(--chart-3); stroke: none; }
-.scene__accentFill { fill: #d9a441; stroke: none; }
-
-.milestone__num {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 1.6rem;
-  height: 1.6rem;
-  border-radius: 50%;
-  background: var(--chart-1);
-  color: #fff;
-  font-weight: 700;
-  font-size: var(--text-xs);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 2px solid var(--color-surface);
-}
+.scene .scene__fill-navy { fill: var(--illus-navy); }
+.scene .scene__fill-teal { fill: var(--illus-teal); }
+.scene .scene__fill-amber { fill: var(--illus-amber); }
+.scene .scene__fill-cream { fill: var(--illus-cream); }
+.scene .scene__fill-mint { fill: var(--illus-mint); }
+.scene .scene__fill-skin { fill: var(--illus-skin); }
+.scene .scene__fill-white { fill: var(--color-surface); }
+.scene .scene__fill-shadow { fill: var(--illus-shadow); }
+.scene .scene__stroke-navy { stroke: var(--illus-navy); }
+.scene .scene__stroke-teal { stroke: var(--illus-teal); }
+.scene .scene__stroke-amber { stroke: var(--illus-amber); }
 
 .milestone__text {
+  grid-area: text;
   min-width: 0;
   font-size: var(--text-sm);
 }
 
-.milestone__week {
-  font-size: var(--text-xs);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-wide);
-  color: var(--chart-3);
+.milestone__title {
+  font-family: var(--font-body);
   font-weight: 700;
+  font-size: var(--text-xl);
+  color: var(--illus-navy);
+  margin: 0 0 var(--space-1);
 }
 
 .milestone__action {
-  font-weight: 600;
-  margin-top: var(--space-1);
+  font-size: var(--text-base);
   color: var(--color-ink-900);
 }
 
@@ -1187,7 +1221,7 @@
 }
 
 .milestone__toggle {
-  margin-top: var(--space-2);
+  margin-top: var(--space-3);
   background: none;
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-pill);
@@ -1213,7 +1247,7 @@
 .milestone__detail {
   margin-top: var(--space-3);
   background: var(--color-surface-muted);
-  border-left: 3px solid var(--chart-3);
+  border-left: 3px solid var(--illus-teal);
   border-radius: var(--radius-sm);
   padding: var(--space-3) var(--space-4);
   display: grid;
@@ -1233,39 +1267,46 @@
   font-size: var(--text-sm);
 }
 
+.journey__footer {
+  margin-top: var(--space-4);
+}
+
+/* Desktop: four columns, scenes on top, the dotted path flowing through the badge row. */
 @media (min-width: 56em) {
   .journey__track {
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: var(--space-5);
-    padding-top: 7.5rem;
+    gap: var(--space-6);
   }
   .journey__path {
     display: block;
-    height: 7.5rem;
-    top: 0;
+    left: 0;
+    width: 100%;
+    top: calc(var(--journey-art-h) + var(--space-3) - 1.5rem);
+    height: 5.5rem;
   }
   .journey__path--vertical {
     display: none;
   }
   .milestone {
     grid-template-columns: 1fr;
-    text-align: left;
+    grid-template-rows: var(--journey-art-h) var(--journey-rail) auto;
+    grid-template-areas:
+      'art'
+      'badge'
+      'text';
+    row-gap: var(--space-3);
   }
   .milestone__art {
-    position: absolute;
-    top: -7.25rem;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 6.5rem;
-    aspect-ratio: 1 / 1;
+    width: 100%;
+    height: var(--journey-art-h);
     display: flex;
-    align-items: center;
-    /* The white disc interrupts the dashed path around each scene. */
-    background: var(--color-surface);
+    align-items: flex-end;
+    justify-content: center;
   }
-  .milestone__num {
-    top: 0.2rem;
-    left: 0.2rem;
+  .scene {
+    width: auto;
+    height: 100%;
+    max-width: 100%;
   }
 }
 

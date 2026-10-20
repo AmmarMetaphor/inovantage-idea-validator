@@ -30,11 +30,17 @@ downloadable PDF. No customer account exists or is planned.
   Week 1 Listen, 2 Select, 3 Test, 4 Learn, each with one action and one
   measure the model writes within editorial limits, and a caveat for
   approvals, safety or long sales cycles. It is a suggested plan, labelled
-  `PLAN_CAVEAT`, never a launch schedule, and never promises sales, demand
-  or a score change. The artwork is original programmatic SVG from
-  `SCENES`, chosen by `sceneFamilyFor(industry, revenueModel)` from the
-  validated submission metadata, never from model text; the model never
-  outputs SVG, HTML or layout. Online the milestones are real buttons
+  `PLAN_CAVEAT` ("Suggested plan. No outcome is guaranteed."), never a
+  launch schedule, and never promises sales, demand or a score change. The
+  artwork is an original flat-style illustration library in `SCENES`
+  (navy outlines, teal highlights, amber accents, cream/mint surfaces, a
+  soft shadow; palette in `SCENE_COLOURS` and the `--illus-*` tokens),
+  chosen by `sceneFamilyFor(industry, revenueModel)` from the validated
+  submission metadata, never from model text; the model never outputs SVG,
+  HTML or layout. Layout: scenes on top, a flowing dotted path through the
+  numbered badge row, then the phase title, action and measure, the same
+  online (horizontal on desktop, vertical rail on mobile) and in the PDF
+  (`journeyRow` in `pdf.ts`). Online the milestones are real buttons
   (`aria-expanded`/`aria-controls`, Enter and Space, visible focus, reduced
   motion respected); there is no completion tracking because nothing
   persists it securely. Reports without a validated `plan` omit the section.

@@ -68,6 +68,16 @@
   --chart-1: #0f2440;   /* navy: reported figures */
   --chart-2: #b8995a;   /* gold: illustrative scenario */
   --chart-3: #2a7f8f;   /* teal: execution factors */
+
+  /* ---- Illustration palette (four-week journey; the PDF uses the same hex) */
+  --illus-navy: #0f2440;
+  --illus-teal: #1f7f7a;
+  --illus-amber: #c8923a;
+  --illus-cream: #fbf1d8;
+  --illus-mint: #e3f1ee;
+  --illus-skin: #f2c9a4;
+  --illus-shadow: #e4ebe9;
+  --illus-path: #bfd9d5;
   --chart-4: #7a4b8f;   /* plum: forecasts / secondary series */
   --chart-grid: #e4e9f1;
   --chart-text: #4a6a95;
