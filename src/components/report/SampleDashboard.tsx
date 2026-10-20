@@ -15,7 +15,7 @@ export function SampleDashboard() {
         <div>
           <p className="dash__label">Idea readiness score (sample)</p>
           <p className="dash__band">{headline.band.title}</p>
-          <p className="small muted">Evidence confidence: {headline.confidence.label}</p>
+          <p className="small muted">Coverage: {headline.coverage.evidence} of {headline.coverage.total} criteria evidence-based</p>
         </div>
       </div>
       <div className="dash__grid">

@@ -40,7 +40,8 @@ export function ScoreRing({ score, size = 148, label }: { score: number | null; 
 export function ScoreHeader({ report, headline, marketLabel, reportRef, generatedOn, illustrative }: { report: StandardReport; headline: Headline; marketLabel: string; reportRef?: string; generatedOn?: string | null; illustrative?: boolean }) {
   const [showRubric, setShowRubric] = useState(false);
   const id = useId();
-  const { overall, band, confidence } = headline;
+  const { overall, band, sources, coverage, framing } = headline;
+  const toneOf = (level: 'high' | 'medium' | 'low' | 'none'): Tone => (level === 'high' ? 'strong' : level === 'medium' ? 'moderate' : level === 'low' ? 'weak' : 'na');
   return (
     <section className={`score-header score-header--${band.tone}`} aria-labelledby={`${id}-title`} id="overview">
       <div className="score-header__meta">
@@ -48,8 +49,15 @@ export function ScoreHeader({ report, headline, marketLabel, reportRef, generate
         <h2 id={`${id}-title`} className="score-header__title">{report.title}</h2>
         <p className="score-header__sub">{report.idea_summary}</p>
         <dl className="score-header__facts">
-          <div><dt>Launch market</dt><dd>{marketLabel}</dd></div>
-          <div><dt>Evidence confidence</dt><dd><ToneChip tone={confidence.level === 'high' ? 'strong' : confidence.level === 'medium' ? 'moderate' : 'weak'}>{confidence.label}</ToneChip> <span className="score-header__detail">{confidence.detail}</span></dd></div>
+          <div className="fact"><dt>Launch market</dt><dd>{marketLabel}</dd></div>
+          <div className="fact">
+            <dt>Source confidence</dt>
+            <dd className="fact__row"><ToneChip tone={toneOf(sources.level)}>{sources.label}</ToneChip><span className="score-header__detail">{sources.detail}</span></dd>
+          </div>
+          <div className="fact">
+            <dt>Assessment coverage</dt>
+            <dd className="fact__row"><ToneChip tone={toneOf(coverage.level)}>{coverage.label}</ToneChip><span className="score-header__detail">{coverage.detail}</span></dd>
+          </div>
         </dl>
       </div>
       <div className="score-header__score">
@@ -71,6 +79,7 @@ export function ScoreHeader({ report, headline, marketLabel, reportRef, generate
       <div className="score-header__assess">
         <h3 className="h4">Assessment</h3>
         <p>{report.verdict.explanation}</p>
+        <p className="score-header__framing"><strong>{framing.next}</strong> {framing.note}</p>
         <div className="score-header__cards">
           <div className="mini-card">
             <p className="mini-card__label">Strongest supported opportunity</p>

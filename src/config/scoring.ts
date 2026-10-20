@@ -128,30 +128,63 @@ export function scoreWord(score: number | null): string {
 export function overallBand(score: number | null): { title: string; tone: Tone } {
   if (score === null) return { title: 'Assessment incomplete', tone: 'na' };
   if (score >= 70) return { title: 'A promising direction to test', tone: 'strong' };
-  if (score >= 45) return { title: 'Worth refining before you commit', tone: 'moderate' };
+  if (score >= 45) return { title: 'A stronger niche could improve this opportunity', tone: 'moderate' };
   return { title: 'Start with a small test before committing more', tone: 'weak' };
 }
 
 export const SCORE_LABEL = 'Idea readiness score';
-export const SCORE_DISCLAIMER = 'A directional assessment based on your answers and available evidence, not a probability of business success.';
+export const SCORE_DISCLAIMER = 'A directional assessment of the idea in its current form, not a probability of business success.';
 
 export const SCORE_RUBRIC = `${SCORE_LABEL}: the weighted mean of the nine criterion scores (0 to 100), computed in code. Market factors carry 50% (10 each) and execution factors 50% (12.5 each). Criteria marked "not enough evidence" are excluded rather than scored zero, and the overall score is withheld when fewer than ${OVERALL_RULES.minCriteria} criteria or under ${Math.round(OVERALL_RULES.minWeightShare * 100)}% of the weight can be scored. No minimum, rounding up or adjustment is applied.`;
 
-export type Confidence = 'high' | 'medium' | 'low';
+export type Confidence = 'high' | 'medium' | 'low' | 'none';
+
+export interface SourceLike { published_date: string | null; geography: string | null; publisher: string | null; claim_type: 'historical' | 'forecast' | 'other' }
 
 /**
- * Evidence confidence: how much of the assessment rests on retrievable
- * sources rather than assumptions. Shown separately from the score.
+ * Source confidence: the quality and relevance of the sources themselves
+ * (dated, attributed, with a stated geography). Says nothing about how much
+ * of the assessment they cover; see assessmentCoverage.
  */
-export function evidenceConfidence(items: ScoredCriterion[], sourceCount: number, evidenceClaims: number): { level: Confidence; label: string; detail: string } {
-  const scored = items.filter((i) => i.basis !== 'insufficient');
-  const evidenceShare = scored.length ? scored.filter((i) => i.basis === 'evidence').length / scored.length : 0;
+export function sourceConfidence(sources: SourceLike[]): { level: Confidence; label: string; detail: string } {
+  const n = sources.length;
+  if (n === 0) return { level: 'none', label: 'No sources', detail: 'No retrievable sources were found; statements rest on assumptions and your answers.' };
+  const dated = sources.filter((s) => !!s.published_date).length;
+  const attributed = sources.filter((s) => !!s.publisher).length;
+  const located = sources.filter((s) => !!s.geography).length;
+  const quality = (dated + attributed + located) / (3 * n);
   let level: Confidence = 'low';
-  if (sourceCount >= 3 && evidenceShare >= 0.5 && evidenceClaims >= 3) level = 'high';
-  else if (sourceCount >= 1 && (evidenceShare >= 0.25 || evidenceClaims >= 2)) level = 'medium';
+  if (n >= 3 && quality >= 0.75) level = 'high';
+  else if (n >= 2 && quality >= 0.5) level = 'medium';
+  else if (n >= 1 && quality >= 0.5) level = 'medium';
   const label = level === 'high' ? 'High' : level === 'medium' ? 'Medium' : 'Low';
-  const detail = `${sourceCount} source${sourceCount === 1 ? '' : 's'}, ${scored.filter((i) => i.basis === 'evidence').length} of ${scored.length} scored criteria evidence-based, ${items.length - scored.length} not scored.`;
-  return { level, label, detail };
+  return { level, label, detail: `${n} source${n === 1 ? '' : 's'}: ${dated} dated, ${attributed} attributed, ${located} with a stated geography.` };
+}
+
+/**
+ * Assessment coverage: how much of the nine-criterion assessment rests on
+ * evidence, on assumptions, or could not be scored. A report can cite
+ * reliable sources and still have low coverage.
+ */
+export function assessmentCoverage(items: ScoredCriterion[]): { evidence: number; assumption: number; insufficient: number; total: number; level: Confidence; label: string; detail: string } {
+  const evidence = items.filter((i) => i.basis === 'evidence' && i.score !== null).length;
+  const assumption = items.filter((i) => i.basis === 'assumption' && i.score !== null).length;
+  const insufficient = items.length - evidence - assumption;
+  const total = items.length;
+  let level: Confidence = 'low';
+  if (evidence >= 6) level = 'high';
+  else if (evidence >= 3) level = 'medium';
+  else if (evidence === 0 && assumption === 0) level = 'none';
+  const label = level === 'high' ? 'Mostly evidence-based' : level === 'medium' ? 'Partly evidence-based' : level === 'low' ? 'Mostly assumptions' : 'Not assessed';
+  return { evidence, assumption, insufficient, total, level, label, detail: `${evidence} of ${total} criteria evidence-based, ${assumption} assumed, ${insufficient} not enough evidence.` };
+}
+
+/** Encouraging, honest framing for the current formulation of the idea. */
+export function readinessFraming(score: number | null): { next: string; note: string } {
+  if (score === null) return { next: 'Your next step: gather the missing evidence before deciding.', note: 'The criteria marked "not enough evidence" show exactly what to find out first.' };
+  if (score >= 70) return { next: 'Your next step: run the first test and record the number.', note: 'A strong starting point; the plan below keeps spending small until the test confirms it.' };
+  if (score >= 45) return { next: 'Clarify the weakest assumption before increasing your investment.', note: 'This assessment concerns the idea in its current form; the improvements below are where it can gain most.' };
+  return { next: 'Your next step: test a more focused version.', note: 'This assessment concerns the idea in its current form, not your ability to build a business. A smaller launch can help you learn before committing more, and the first recommendation offers a more focused route.' };
 }
 
 export function criterion(id: string): Criterion | undefined {

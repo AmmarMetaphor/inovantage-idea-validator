@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { deriveHeadline } from '../src/config/headline';
-import { CRITERIA, CRITERION_IDS, evidenceConfidence, groupScore, overallBand, overallScore, scoreTone, scoreWord, TOTAL_WEIGHT, type ScoredCriterion } from '../src/config/scoring';
+import { assessmentCoverage, CRITERIA, CRITERION_IDS, groupScore, overallBand, overallScore, readinessFraming, scoreTone, scoreWord, sourceConfidence, TOTAL_WEIGHT, type ScoredCriterion } from '../src/config/scoring';
 import { buildBrief, stubStandardReport } from '../netlify/lib/research';
 import { validAnswers } from './helpers';
 
@@ -56,10 +56,28 @@ describe('Scoring model: nine criteria, published weights, honest overall score'
     expect(groupScore(all(null, 'insufficient'), 'execution').score).toBeNull();
   });
 
-  it('evidence confidence is shown separately from the score', () => {
-    expect(evidenceConfidence(all(70, 'assumption'), 0, 0).level).toBe('low');
-    expect(evidenceConfidence(all(70, 'assumption'), 2, 2).level).toBe('medium');
-    expect(evidenceConfidence(all(70, 'evidence'), 4, 5).level).toBe('high');
+  it('source confidence and assessment coverage are separate: good sources do not imply covered criteria', () => {
+    const good = { published_date: '2025', geography: 'Leeds', publisher: 'ONS', claim_type: 'historical' as const };
+    const bare = { published_date: null, geography: null, publisher: null, claim_type: 'other' as const };
+    expect(sourceConfidence([]).level).toBe('none');
+    expect(sourceConfidence([bare]).level).toBe('low');
+    expect(sourceConfidence([good, good, good]).level).toBe('high');
+    // Three excellent sources, but every criterion is assumed: coverage stays low.
+    const cov = assessmentCoverage(all(70, 'assumption'));
+    expect(cov).toMatchObject({ evidence: 0, assumption: 9, insufficient: 0, level: 'low' });
+    expect(assessmentCoverage(all(70, 'evidence')).level).toBe('high');
+    const mixed = all(70, 'evidence').map((i, k) => (k < 5 ? { ...i, score: null, basis: 'insufficient' as const } : i));
+    expect(assessmentCoverage(mixed)).toMatchObject({ evidence: 4, insufficient: 5, level: 'medium' });
+    expect(assessmentCoverage(all(null, 'insufficient')).level).toBe('none');
+  });
+
+  it('framing is encouraging but never dismissive or promising', () => {
+    for (const s of [null, 20, 50, 80]) {
+      const f = readinessFraming(s);
+      expect(f.next + f.note).not.toMatch(/bad idea|doomed|failure|guarantee/i);
+    }
+    expect(readinessFraming(30).next).toBe('Your next step: test a more focused version.');
+    expect(readinessFraming(55).next).toMatch(/Clarify this assumption|Clarify the weakest assumption/);
   });
 
   it('the headline, factor bars, radar and PDF all read the same report fields', () => {

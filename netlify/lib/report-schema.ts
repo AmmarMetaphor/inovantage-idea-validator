@@ -7,6 +7,7 @@
   generation-schema.ts, which are mapped into this model explicitly.
 */
 import { z } from 'zod';
+import { SCENE_FAMILIES } from '../../src/config/journey';
 import { CRITERION_IDS } from '../../src/config/scoring';
 
 export const VERDICTS = ['Worth testing', 'Refine before investing', 'Reconsider the current approach'] as const;
@@ -76,6 +77,32 @@ export const ChartSchema = z.object({
 
 const ShortList = (max: number) => z.array(z.string().min(1).max(90)).max(max);
 
+/** One milestone of the suggested four-week plan. */
+export const PlanWeekSchema = z.object({
+  week: z.number().int().min(1).max(4),
+  phase: z.enum(['listen', 'select', 'test', 'learn']),
+  /** The concrete action, ≤ 25 words. */
+  action: z.string().min(1).max(170),
+  /** What to record, ≤ 20 words. */
+  measure: z.string().min(1).max(140),
+  /** How the result informs the next decision, ≤ 35 words. */
+  detail: z.string().max(240),
+});
+
+/**
+ * The suggested four-week plan: generated per report, validated here, with
+ * the artwork family chosen from questionnaire metadata (never model text).
+ * Optional so reports generated before it existed still parse; the renderers
+ * omit the section rather than invent a plan.
+ */
+export const PlanSchema = z.object({
+  weeks: z.array(PlanWeekSchema).length(4),
+  /** Why four weeks may not fit (approvals, safety checks, long sales cycles), ≤ 40 words; '' when none. */
+  caveat: z.string().max(280),
+  scene_family: z.enum(SCENE_FAMILIES),
+});
+export type Plan = z.infer<typeof PlanSchema>;
+
 export const StandardReportSchema = z.object({
   title: z.string().min(1).max(80),
   /** One line: what the business is, ≤ 20 words. */
@@ -108,6 +135,7 @@ export const StandardReportSchema = z.object({
   /** What could not be found or verified. */
   limitations: z.array(z.string().min(1).max(130)).min(1).max(4),
   claims: z.array(ClaimSchema).max(30),
+  plan: PlanSchema.optional(),
 });
 export type StandardReport = z.infer<typeof StandardReportSchema>;
 
@@ -142,6 +170,8 @@ export const DetailedReportSchema = z.object({
   sources: z.array(SourceSchema).max(12),
   limitations: z.array(z.string().min(1).max(200)).min(1).max(8),
   claims: z.array(ClaimSchema).max(80),
+  /** The standard report's plan, with an expanded explanation per week (≤ 90 words each). */
+  plan: PlanSchema.extend({ expansions: z.array(z.string().max(620)).length(4) }).optional(),
 });
 export type DetailedReport = z.infer<typeof DetailedReportSchema>;
 

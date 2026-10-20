@@ -23,6 +23,7 @@ import type { Answers, Step } from '../../src/questionnaire/types';
 import type { ResearchSource } from './db/types';
 import { z } from 'zod';
 import { DETAILED_SECTION_GROUPS, FINANCE_KEYS, GENERATION_SCHEMAS, mapDetailedParts, mapStandardParts, type MappingDiagnostics, type StandardParts } from './generation-schema';
+import { JOURNEY_PHASES, sceneFamilyFor } from '../../src/config/journey';
 import { CRITERIA } from '../../src/config/scoring';
 import { VERDICTS, type DetailedReport, type StandardReport } from './report-schema';
 
@@ -36,6 +37,10 @@ export interface Brief {
   /** Inputs the customer marked as unknown; the report must label them as gaps. */
   unknowns: string[];
   existingBusiness: boolean;
+  /** Validated questionnaire metadata used to pick artwork and frame the plan; never model output. */
+  industry: string;
+  revenueModel: string;
+  stage: string;
   answersVersion: number;
 }
 
@@ -173,6 +178,9 @@ export function buildBrief(input: { orderRef: string; market: 'UK' | 'US' | 'AU'
     lines,
     unknowns,
     existingBusiness: isExistingBusinessV3(input.answers),
+    industry: asString(input.answers.industry),
+    revenueModel: asString(input.answers.revenueModel),
+    stage: asString(input.answers.stage),
     answersVersion: version,
   };
 }
@@ -210,8 +218,16 @@ ${EVIDENCE_RULES}`;
 
 const FINANCE_INSTRUCTION = `Financial inputs as six parallel arrays in this order: ${FINANCE_KEYS.join(', ')} (price and variable_cost per sale, fixed_monthly per month, volumes as monthly sales for a low, base and high case). finance_known[i] is true when a figure can be given (a customer figure, a sourced figure or a labelled assumption) and false when nobody knows; finance_values[i] is the figure in the stated currency (ignored when not known); finance_basis[i] is "customer_input", "evidence" or "assumption"; finance_notes[i] explains it in ≤ 20 words. If the customer said NOT SURE, give a labelled assumption rather than a blank. price_unit is "sale", "hour", "month" or similar. Do NOT compute the scenario table; the system computes it.`;
 
+const PLAN_INSTRUCTION = `The four-week plan ("Your first four weeks in action") is a suggested initial validation period, not a launch schedule. Four weeks in fixed order: Week 1 Listen (hear the problem from the people who have it), Week 2 Select (choose the one offer to put in front of them), Week 3 Test (the smallest real test that produces a number), Week 4 Learn (compare the number with a threshold and decide).
+week_actions: four concrete actions (≤ 25 words each) specific to this idea, its customers, market, business model, stage, budget, time and experience, and to the unresolved assumptions in the research. Name who to talk to, what to show, where, and how many. Never "do research" or "market the business".
+week_measures: four things to record (≤ 20 words each), one per week, each a countable number or a yes/no outcome.
+week_details: four sentences (≤ 35 words each) on how that week's result informs the next decision.
+Where approvals, licences, safety checks or long sales cycles apply, use interviews, simulations, quotes or feasibility checks rather than premature selling or operating, and say so in plan_caveat (≤ 40 words); otherwise plan_caveat is "". Do not promise sales, demand, profit or any score change.`;
+
 const PART_INSTRUCTIONS: Record<keyof StandardParts, string> = {
-  verdict: `Part 1 of 3: verdict, criterion scores and SWOT.
+  plan: `Part 4 of 4: the four-week plan.
+${PLAN_INSTRUCTION}`,
+  verdict: `Part 1 of 4: verdict, criterion scores and SWOT.
 - title ≤ 10 words; idea_summary ≤ 25 words.
 - verdict: exactly one of ${VERDICTS.map((v) => `"${v}"`).join(', ')}. verdict_explanation ≤ 85 words: constructive, specific, grounded in the sources and the customer's answers; say what is supported, what needs strengthening and the most useful next action. Never say an idea is bad or doomed; never guarantee success.
 - scores: exactly nine integers from 0 to 100, one per criterion in this order, where higher always means more favourable for the founder:
@@ -219,10 +235,10 @@ ${CRITERIA.map((c, i) => `  ${i + 1}. ${c.id} (${c.label}): ${c.rubric}`).join('
   score_basis: nine entries in the same order: "evidence" when the score rests on a cited source, "assumption" when it rests on the customer's answers or reasonable assumptions, "insufficient" when neither supports a rating (the score for that entry is then ignored; never give 0 to mean unknown). Do not inflate scores or impose a floor.
   score_notes: nine brief reasons (≤ 22 words each). score_improvements: nine entries (≤ 22 words each), one practical way to strengthen that criterion, or "" when it is already strong.
 - strengths, weaknesses, opportunities, threats: up to 3 items each, ≤ 14 words each. Strengths and opportunities must be supported; do not invent positives.`,
-  finance: `Part 2 of 3: financial inputs and the evidence chart.
+  finance: `Part 2 of 4: financial inputs and the evidence chart.
 ${FINANCE_INSTRUCTION}
 Chart: chart_kind is "evidence" only when a listed source supplies the series; then chart_source_ids holds that source's id for each point (same length as chart_values). Otherwise "scenario" (label the basis in chart_note) or "none" (state the data gap in chart_note and leave labels and values empty). At most 6 points; chart_labels ≤ 3 words each; chart_title ≤ 10 words; chart_unit is the unit of the values; chart_note ≤ 30 words.`,
-  action: `Part 3 of 3: risks, recommendations, experiment, sources and limitations.
+  action: `Part 3 of 4: risks, recommendations, experiment, sources and limitations.
 - risks: exactly 3, ≤ 18 words each; risk_validations: the cheap way to test each risk, same order, ≤ 20 words each. Keep material financial, operational or regulatory concerns visible.
 - improvements: exactly 5 prioritised recommendations (the action, ≤ 22 words each); improvement_purposes: why each matters (≤ 20 words, same order); improvement_measures: a practical success measure for each, phrased as a suggestion (≤ 20 words, same order). If the current approach is unworkable, make the first recommendation a viable alternative where one exists.
 - experiment_description ≤ 35 words: the one cheap test to run first; experiment_budget as a number in the stated currency; experiment_duration (e.g. "4 weeks"); experiment_success: a measurable criterion ≤ 25 words, labelled as a suggested threshold.
@@ -232,6 +248,9 @@ Chart: chart_kind is "evidence" only when a listed source supplies the series; t
 
 const DETAILED_PART_INSTRUCTIONS = {
   sections: (ids: readonly string[], partNo: number, partCount: number) => `Part ${partNo} of ${partCount}: ${ids.length === 1 ? `one section. Write section s1 = "${ids[0]}" and leave every s2_* field empty.` : `two sections. Write section s1 = "${ids[0]}" and s2 = "${ids[1]}".`} For each section: a heading (≤ 12 words), paragraphs (≤ 8, each ≤ 220 words), bullets (≤ 12, each ≤ 40 words) and an optional table: table_columns (2–6 column names) with table_rows (each row has one cell per column), or both empty for no table. Use tables for competitor comparison, cost assumptions and the roadmap.`,
+  plan: (plan: string) => `Final part: expand the four-week plan already given in the standard report. The plan is fixed; do not change its actions or measures:
+${plan}
+week_expansions: four explanations (≤ 90 words each, same order) of how to carry out that week for this business: who, where, what to prepare, what good and poor results look like and what each means for the following week. Same caveats as the plan; no promised outcomes.`,
   summary: `Final part: title (≤ 10 words), executive_summary (3–7 bullet sentences, ≤ 40 words each), financial inputs, sensitivity, sources and limitations.
 ${FINANCE_INSTRUCTION}
 sensitivity_changes (e.g. "price −10%", "volume −25%", "cost +20%", up to 8) with sensitivity_effects in words (≤ 25 words each, same order).
@@ -264,8 +283,10 @@ export const GENERATION_FORMATS = {
   'standard.verdict': zodOutputFormat(GENERATION_SCHEMAS['standard.verdict']),
   'standard.finance': zodOutputFormat(GENERATION_SCHEMAS['standard.finance']),
   'standard.action': zodOutputFormat(GENERATION_SCHEMAS['standard.action']),
+  'standard.plan': zodOutputFormat(GENERATION_SCHEMAS['standard.plan']),
   'detailed.sections': zodOutputFormat(GENERATION_SCHEMAS['detailed.sections']),
   'detailed.summary': zodOutputFormat(GENERATION_SCHEMAS['detailed.summary']),
+  'detailed.plan': zodOutputFormat(GENERATION_SCHEMAS['detailed.plan']),
 } as const;
 
 /** Text of the API's grammar-size rejection; a part that hits it is regenerated without a grammar. */
@@ -337,26 +358,30 @@ export class AnthropicGenerator implements ReportGenerator {
   async composeStandard(brief: Brief, sources: ResearchSource[], notes: string, opts: { tighten: number }): Promise<ComposeOutput<StandardReport>> {
     const tighten = opts.tighten > 0 ? `\n\nIMPORTANT: a previous draft overflowed two pages. Use about ${Math.max(40, 70 - opts.tighten * 15)}% of every length limit this time.` : '';
     const shared = `Order reference: ${brief.orderRef}\n${briefBlock(brief)}\n\nResearch sources (cite by id):\n${sourceBlock(sources) || '(none found)'}\n\nResearch notes:\n${notes || '(none)'}`;
-    const [verdict, finance, action] = await Promise.all([
+    const [verdict, finance, action, plan] = await Promise.all([
       this.composePart('compose_standard', 'standard.verdict', SYSTEM_STANDARD, shared, PART_INSTRUCTIONS.verdict + tighten, 8000),
       this.composePart('compose_standard', 'standard.finance', SYSTEM_STANDARD, shared, PART_INSTRUCTIONS.finance + tighten, 8000),
       this.composePart('compose_standard', 'standard.action', SYSTEM_STANDARD, shared, PART_INSTRUCTIONS.action + tighten, 8000),
+      this.composePart('compose_standard', 'standard.plan', SYSTEM_STANDARD, shared, PART_INSTRUCTIONS.plan + tighten, 6000),
     ]);
-    const parts = [verdict, finance, action];
-    const { report, diagnostics } = mapStandardParts({ verdict: verdict.value, finance: finance.value, action: action.value }, sources, brief.unknowns);
-    return { report, model: verdict.model, usage: sumUsage(parts), mapping: diagnostics, fallbacks: fallbackNames(['standard.verdict', 'standard.finance', 'standard.action'], parts) };
+    const parts = [verdict, finance, action, plan];
+    const { report, diagnostics } = mapStandardParts({ verdict: verdict.value, finance: finance.value, action: action.value, plan: plan.value }, sources, brief.unknowns, { industry: brief.industry, revenueModel: brief.revenueModel });
+    return { report, model: verdict.model, usage: sumUsage(parts), mapping: diagnostics, fallbacks: fallbackNames(['standard.verdict', 'standard.finance', 'standard.action', 'standard.plan'], parts) };
   }
 
   async composeDetailed(brief: Brief, sources: ResearchSource[], notes: string, standard: StandardReport | null): Promise<ComposeOutput<DetailedReport>> {
     const shared = `Order reference: ${brief.orderRef}\n${briefBlock(brief)}\n\nStandard report verdict already delivered: ${standard ? `${standard.verdict.label}. ${standard.verdict.explanation}` : '(not available)'}\n\nResearch sources (cite by id):\n${sourceBlock(sources) || '(none found)'}\n\nResearch notes:\n${notes || '(none)'}`;
     const partCount = DETAILED_SECTION_GROUPS.length + 1;
-    const [sectionParts, summary] = await Promise.all([
+    const standardPlan = standard?.plan ?? null;
+    const planText = standardPlan ? standardPlan.weeks.map((w) => `Week ${w.week} ${w.phase}: ${w.action} Measure: ${w.measure}`).join('\n') : '';
+    const [sectionParts, summary, planPart] = await Promise.all([
       Promise.all(DETAILED_SECTION_GROUPS.map((ids, i) => this.composePart('compose_detailed', 'detailed.sections', SYSTEM_DETAILED, shared, DETAILED_PART_INSTRUCTIONS.sections(ids, i + 1, partCount), 10000))),
       this.composePart('compose_detailed', 'detailed.summary', SYSTEM_DETAILED, shared, DETAILED_PART_INSTRUCTIONS.summary, 8000),
+      standardPlan ? this.composePart('compose_detailed', 'detailed.plan', SYSTEM_DETAILED, shared, DETAILED_PART_INSTRUCTIONS.plan(planText), 6000) : Promise.resolve(null),
     ]);
-    const parts: PartResult<unknown>[] = [...sectionParts, summary];
-    const { report, diagnostics } = mapDetailedParts({ sections: sectionParts.map((p) => p.value), summary: summary.value }, sources);
-    return { report, model: summary.model, usage: sumUsage(parts), mapping: diagnostics, fallbacks: fallbackNames([...DETAILED_SECTION_GROUPS.map((_, i) => `detailed.sections.${i + 1}`), 'detailed.summary'], parts) };
+    const parts: PartResult<unknown>[] = [...sectionParts, summary, ...(planPart ? [planPart] : [])];
+    const { report, diagnostics } = mapDetailedParts({ sections: sectionParts.map((p) => p.value), summary: summary.value, plan: planPart?.value ?? null }, sources, standardPlan);
+    return { report, model: summary.model, usage: sumUsage(parts), mapping: diagnostics, fallbacks: fallbackNames([...DETAILED_SECTION_GROUPS.map((_, i) => `detailed.sections.${i + 1}`), 'detailed.summary', 'detailed.plan'], parts) };
   }
 
   /**
@@ -501,6 +526,11 @@ export function stubStandardReport(brief: Brief, long = false): StandardReport {
     sources: [{ index: 1, title: pad('STUB SOURCE — not real research', 110), url: long ? 'https://example.invalid/' + 'a-very-long-path-segment/'.repeat(10) : 'https://example.invalid/stub', publisher: 'example.invalid', published_date: null, geography: brief.market, unit: null, period: null, claim_type: 'other', used_for: pad('nothing', 120) }],
     limitations: [pad('All of it: no research was performed.', 130), ...brief.unknowns.slice(0, 3).map((u) => pad(`Not provided: ${u}`, 130))],
     claims: [{ section_id: 'summary', text: pad(STUB_NOTE, 320), kind: 'assumption', confidence: 'low', source_indexes: [], evidence_date: null }],
+    plan: {
+      weeks: JOURNEY_PHASES.map((p) => ({ week: p.week, phase: p.id, action: pad(`Stub ${p.title.toLowerCase()} action for ${brief.ideaName}`, 170), measure: pad(`Stub ${p.title.toLowerCase()} measure`, 140), detail: pad(`Stub ${p.title.toLowerCase()} detail`, 240) })),
+      caveat: brief.stage === 'trading' ? '' : pad('Stub caveat: timing depends on your circumstances.', 280),
+      scene_family: sceneFamilyFor(brief.industry, brief.revenueModel),
+    },
   };
 }
 
@@ -539,9 +569,9 @@ export class StubGenerator implements ReportGenerator {
     return { report: stubStandardReport(brief, long), model: 'stub', usage: { input_tokens: 0, output_tokens: 0 } };
   }
 
-  async composeDetailed(brief: Brief, sources: ResearchSource[]): Promise<ComposeOutput<DetailedReport>> {
+  async composeDetailed(brief: Brief, sources: ResearchSource[], _notes?: string, standard?: StandardReport | null): Promise<ComposeOutput<DetailedReport>> {
     this.composeCalls += 1;
-    const std = stubStandardReport(brief);
+    const std = standard ?? stubStandardReport(brief);
     const sec = (id: DetailedReport['sections'][number]['id'], heading: string) => ({ id, heading, paragraphs: [STUB_NOTE], bullets: [], table: null });
     const report: DetailedReport = {
       title: `Detailed report (STUB): ${brief.ideaName}`,
@@ -562,6 +592,7 @@ export class StubGenerator implements ReportGenerator {
       sources: std.sources,
       limitations: ['All of it: stub output.'],
       claims: std.claims,
+      plan: std.plan ? { ...std.plan, expansions: std.plan.weeks.map((w) => `Stub expansion for week ${w.week}.`) } : undefined,
     };
     return { report, model: 'stub', usage: { input_tokens: 0, output_tokens: 0 } };
   }

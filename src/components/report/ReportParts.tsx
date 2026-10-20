@@ -167,7 +167,8 @@ export function Insights({ report }: { report: StandardReport }) {
           )}
         </div>
         <div className="insight insight--work">
-          <h3 className="h4">What needs strengthening</h3>
+          <h3 className="h4">What could strengthen this idea</h3>
+          <p className="small muted">Practical actions, not a promise of a particular score.</p>
           {strengthen.length ? (
             <ul className="insight__list">
               {strengthen.map((s) => (

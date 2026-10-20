@@ -76,6 +76,16 @@ export const SAMPLE_REPORT: StandardReport = {
     { section_id: 'financials', text: 'Cost per groom is assumed at £7 for consumables.', kind: 'assumption', confidence: 'low', source_indexes: [], evidence_date: null },
     { section_id: 'financials', text: 'Break-even of 18 grooms a month follows from the stated price and assumed costs.', kind: 'calculation', confidence: 'high', source_indexes: [], evidence_date: null },
   ],
+  plan: {
+    weeks: [
+      { week: 1, phase: 'listen', action: 'Talk to 10 owners of anxious or large dogs at two north Leeds parks and one vet waiting room about their last groom.', measure: 'How many describe salon stress unprompted, and what they paid.', detail: 'Fewer than five means the problem is weaker than assumed and the niche needs rethinking before any spend.' },
+      { week: 2, phase: 'select', action: 'Choose one package (full groom at home, 90 minutes) and one price to test, and write a one-page booking sheet.', measure: 'One package with its price and travel radius written down.', detail: 'Two packages make the test unreadable; the single offer is what week three measures.' },
+      { week: 3, phase: 'test', action: 'Offer 20 discounted first grooms from a hired van through two community groups, taking a £10 deposit.', measure: 'Deposits paid and grooms completed.', detail: 'Deposits are the demand signal; completed grooms show whether the time per visit holds.' },
+      { week: 4, phase: 'learn', action: 'Compare deposits and rebooking requests with the suggested threshold and decide: continue, refine the niche, or pause.', measure: 'Deposits versus 12; rebooking requests versus 8.', detail: 'Under the threshold means refine the niche and re-test before buying a van; over it means price the fit-out.' },
+    ],
+    caveat: 'Grooming needs insurance and, in some councils, a trading notification; confirm both before the trial week.',
+    scene_family: 'services',
+  },
 };
 
 /** Mirrors computeFinancials for the fictional inputs: £45 price, £7 cost, £650 fixed, 30/60/90 grooms. */

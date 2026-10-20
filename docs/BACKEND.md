@@ -231,8 +231,10 @@ properties, arrays no deeper than `number[][]`, and **no tools**.
 | `standard.verdict` | 15 | title, summary, verdict, scores, SWOT, limitations, claims |
 | `standard.finance` | 16 | financial inputs (parallel arrays), chart, claims |
 | `standard.action` | 13 | risks, improvements, experiment, sources used, claims |
+| `standard.plan` | 4 | four-week journey: week actions, measures, details, caveat |
 | `detailed.sections` ×5 | 14 | two sections each (2+2+2+2+1 of the nine), claims |
 | `detailed.summary` | 16 | title, executive summary, inputs, sensitivity, sources, limitations, claims |
+| `detailed.plan` | 1 | one expansion per week of the standard plan (only when the standard report has a plan) |
 
 `mapStandardParts` / `mapDetailedParts` merge the parts into the application
 model. Every business rule lives in that mapping, on the server:
@@ -246,7 +248,24 @@ model. Every business rule lives in that mapping, on the server:
   publisher, date, geography and period always come from the research row,
   never from the model;
 - unknowns stay explicit: `finance_known=false` and `0` scores become
-  `null`; nothing is filled in with invented values.
+  `null`; nothing is filled in with invented values;
+- the four-week plan (`mapPlan`) always has exactly four weeks in the
+  fixed order Listen, Select, Test, Learn; a missing week falls back to the
+  phase purpose and is recorded as `plan:padded`; the `scene_family` that
+  picks the artwork comes from the submission's industry and revenue model
+  (`sceneFamilyFor`), never from the model, and the model never emits SVG,
+  HTML or layout.
+
+**Older reports.** `plan` is optional in the application schema. A report
+composed before the journey existed has no `plan`, parses unchanged, and the
+web report and PDF simply omit the section; nothing is invented for it.
+Adding the journey to such a report means re-running the `compose` stage
+for that job, which re-renders the PDF. That is an explicit owner action
+only (re-queue the job at `compose` from its research checkpoint, as in the
+guarded recovery SQL in `docs/PILOT.md`); research is not repeated because
+the checkpoint is reused, and `delivery_attempts` prevents the report email
+being sent again. Nothing in the deployment rewrites delivered PDFs,
+repeats paid research or resends email on its own.
 
 **Grammar fallback.** If the API still rejects one part's grammar as too
 large, that part alone is regenerated once without `output_config.format`

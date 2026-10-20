@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { FinancialResult } from '@/lib/api';
 import { deriveHeadline } from './derive';
 import { ConsultationCta, EvidenceChart, Experiment, FinancialTable, Insights, LockedPreview, Recommendations, Risks, Sources, UpgradePanel } from './ReportParts';
+import { Journey } from './Journey';
 import { FactorCards, Radar, ScoreHeader } from './Scores';
 import type { StandardReport } from './types';
 
@@ -11,6 +12,7 @@ export const REPORT_NAV = [
   { id: 'market', label: 'Market' },
   { id: 'financials', label: 'Financials' },
   { id: 'roadmap', label: 'Roadmap' },
+  { id: 'plan', label: 'Four weeks' },
   { id: 'journey', label: 'Journey' },
 ] as const;
 
@@ -89,6 +91,7 @@ export function StandardReportView({ report, fin, marketLabel, reportRef, genera
       <Risks risks={report.risks} />
       <Recommendations items={report.improvements} />
       <Experiment ex={report.experiment} currency={fin.currency} />
+      {report.plan && <Journey plan={report.plan} ideaName={ideaName} />}
       {!purchased && <LockedPreview title="Roadmap" body="Prioritised steps and milestones from first test to launch." ideaName={ideaName} onUpgrade={upgrade?.onUpgrade} busy={upgrade?.busy} available={upgrade?.available} />}
 
       <section className="report-block" id="journey" aria-labelledby="journey-h">

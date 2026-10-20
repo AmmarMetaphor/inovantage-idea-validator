@@ -24,6 +24,7 @@
 */
 import { z } from 'zod';
 import type { ResearchSource } from './db/types';
+import { JOURNEY_PHASES, sceneFamilyFor, type SceneFamily } from '../../src/config/journey';
 import {
   DETAILED_SECTION_IDS,
   DetailedReportSchema,
@@ -31,6 +32,7 @@ import {
   StandardReportSchema,
   VERDICTS,
   type DetailedReport,
+  type Plan,
   type StandardReport,
 } from './report-schema';
 
@@ -116,10 +118,20 @@ export const StandardActionPart = z.object({
   ...CLAIM_FIELDS,
 });
 
+/** The four-week plan: one action, one measure and one detail per week, in Listen/Select/Test/Learn order. */
+export const StandardPlanPart = z.object({
+  week_actions: z.array(z.string()),
+  week_measures: z.array(z.string()),
+  week_details: z.array(z.string()),
+  /** Why four weeks may not fit this business, or "" when it does. */
+  plan_caveat: z.string(),
+});
+
 export const STANDARD_PARTS = {
   verdict: StandardVerdictPart,
   finance: StandardFinancePart,
   action: StandardActionPart,
+  plan: StandardPlanPart,
 } as const;
 export type StandardParts = { [K in keyof typeof STANDARD_PARTS]: z.infer<(typeof STANDARD_PARTS)[K]> };
 
@@ -162,15 +174,22 @@ export const DETAILED_SECTION_GROUPS: (typeof DETAILED_SECTION_IDS)[number][][] 
   DETAILED_SECTION_IDS.slice(8, 9),
 ];
 
-export type DetailedParts = { sections: z.infer<typeof DetailedSectionsPart>[]; summary: z.infer<typeof DetailedSummaryPart> };
+/** Expanded explanation of each week of the standard plan (same actions, more depth). */
+export const DetailedPlanPart = z.object({
+  week_expansions: z.array(z.string()),
+});
+
+export type DetailedParts = { sections: z.infer<typeof DetailedSectionsPart>[]; summary: z.infer<typeof DetailedSummaryPart>; plan: z.infer<typeof DetailedPlanPart> | null };
 
 /** Every schema that is sent to the API, for diagnostics and tests. */
 export const GENERATION_SCHEMAS = {
   'standard.verdict': StandardVerdictPart,
   'standard.finance': StandardFinancePart,
   'standard.action': StandardActionPart,
+  'standard.plan': StandardPlanPart,
   'detailed.sections': DetailedSectionsPart,
   'detailed.summary': DetailedSummaryPart,
+  'detailed.plan': DetailedPlanPart,
 } as const;
 
 /* ---------------------------------------------------------------------------
@@ -322,10 +341,29 @@ function verdictLabel(s: string, d: MappingDiagnostics): (typeof VERDICTS)[numbe
   return 'Refine before investing';
 }
 
-export function mapStandardParts(parts: StandardParts, research: ResearchSource[], unknowns: string[]): { report: StandardReport; diagnostics: MappingDiagnostics } {
+export interface PlanContext {
+  industry?: string;
+  revenueModel?: string;
+}
+
+/** Validate the generated plan: exactly four weeks in phase order, clipped, with the artwork family from metadata. */
+export function mapPlan(part: z.infer<typeof StandardPlanPart>, ctx: PlanContext, d: MappingDiagnostics): Plan {
+  const family: SceneFamily = sceneFamilyFor(ctx.industry, ctx.revenueModel);
+  const weeks = JOURNEY_PHASES.map((p, i) => ({
+    week: p.week,
+    phase: p.id,
+    action: clip(part.week_actions[i], 170, `week_actions[${i}]`, d) || `${p.title}: ${p.purpose}`,
+    measure: clip(part.week_measures[i], 140, `week_measures[${i}]`, d) || 'Record what happened and the number it produced.',
+    detail: clip(part.week_details[i], 240, `week_details[${i}]`, d),
+  }));
+  if (part.week_actions.filter((x) => x && x.trim()).length < 4) d.normalised.push('plan:padded');
+  return { weeks, caveat: clip(part.plan_caveat, 280, 'plan_caveat', d), scene_family: family };
+}
+
+export function mapStandardParts(parts: StandardParts, research: ResearchSource[], unknowns: string[], ctx: PlanContext = {}): { report: StandardReport; diagnostics: MappingDiagnostics } {
   const d = newDiagnostics();
   const table = new SourceTable(research, 8, d);
-  const { verdict: v, finance: f, action: a } = parts;
+  const { verdict: v, finance: f, action: a, plan: p } = parts;
 
   // Sources the model says it relied on come first, in its order.
   a.source_ids_used.forEach((id, i) => table.cite(id, a.source_uses[i] ?? ''));
@@ -404,11 +442,12 @@ export function mapStandardParts(parts: StandardParts, research: ResearchSource[
     sources: table.finish(),
     limitations,
     claims,
+    plan: mapPlan(p, ctx, d),
   };
   return { report: StandardReportSchema.parse(report), diagnostics: d };
 }
 
-export function mapDetailedParts(parts: DetailedParts, research: ResearchSource[]): { report: DetailedReport; diagnostics: MappingDiagnostics } {
+export function mapDetailedParts(parts: DetailedParts, research: ResearchSource[], standardPlan: Plan | null = null): { report: DetailedReport; diagnostics: MappingDiagnostics } {
   const d = newDiagnostics();
   const table = new SourceTable(research, 12, d);
   const s = parts.summary;
@@ -455,6 +494,9 @@ export function mapDetailedParts(parts: DetailedParts, research: ResearchSource[
     sources: table.finish(),
     limitations,
     claims,
+    // The detailed plan is the standard plan with expanded explanations; it is
+    // never a different plan, and absent when the standard report has none.
+    plan: standardPlan ? { ...standardPlan, expansions: JOURNEY_PHASES.map((_, i) => clip(parts.plan?.week_expansions[i], 620, `week_expansions[${i}]`, d)) } : undefined,
   };
   return { report: DetailedReportSchema.parse(report), diagnostics: d };
 }

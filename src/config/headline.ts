@@ -5,7 +5,7 @@
   action are all computed from fields that already exist in the report.
   Server-safe: relative imports only.
 */
-import { CRITERIA, criterion, evidenceConfidence, groupScore, overallBand, overallScore, scoreTone, scoreWord, type CriterionGroup, type CriterionId, type OverallScore, type ScoreBasis, type Tone } from './scoring';
+import { assessmentCoverage, CRITERIA, criterion, groupScore, overallBand, overallScore, readinessFraming, scoreTone, scoreWord, sourceConfidence, type CriterionGroup, type CriterionId, type OverallScore, type ScoreBasis, type Tone } from './scoring';
 
 /* Structural types: the browser's report types and the server's Zod output both satisfy them. */
 export interface ScorecardItem { id: CriterionId; score: number | null; basis: ScoreBasis; note: string; improvement: string }
@@ -24,7 +24,12 @@ type StandardReport = ReportLike;
 export interface Headline {
   overall: OverallScore;
   band: { title: string; tone: Tone };
-  confidence: ReturnType<typeof evidenceConfidence>;
+  /** Quality of the sources themselves. */
+  sources: ReturnType<typeof sourceConfidence>;
+  /** How much of the assessment is evidence-backed, assumed or unknown. */
+  coverage: ReturnType<typeof assessmentCoverage>;
+  /** Encouraging, honest next-step framing for the current formulation. */
+  framing: ReturnType<typeof readinessFraming>;
   /** The best-supported positive: the top evidence-based criterion, else the first listed opportunity. */
   strongest: { text: string; kind: 'criterion' | 'opportunity' | 'none' };
   /** The most useful next action: the experiment, else the first recommendation. */
@@ -35,8 +40,8 @@ export interface Headline {
 export function deriveHeadline(report: StandardReport): Headline {
   const items = report.scorecard.map((s) => ({ id: s.id, score: s.score, basis: s.basis }));
   const overall = overallScore(items);
-  const evidenceClaims = report.claims.filter((c) => c.kind === 'evidence' && c.source_indexes.length > 0).length;
-  const confidence = evidenceConfidence(items, report.sources.length, evidenceClaims);
+  const sources = sourceConfidence(report.sources);
+  const coverage = assessmentCoverage(items);
   const topEvidence = [...report.scorecard]
     .filter((s) => s.basis === 'evidence' && s.score !== null && s.score >= 60)
     .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0];
@@ -51,7 +56,9 @@ export function deriveHeadline(report: StandardReport): Headline {
   return {
     overall,
     band: overallBand(overall.score),
-    confidence,
+    sources,
+    coverage,
+    framing: readinessFraming(overall.score),
     strongest,
     nextAction,
     groups: { market: groupScore(items, 'market'), execution: groupScore(items, 'execution') },

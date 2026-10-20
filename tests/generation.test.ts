@@ -41,9 +41,11 @@ describe('Generation schema compactness (the grammar the API compiles)', () => {
     });
   }
 
-  it('the whole standard report needs ≤ 48 properties across three parts, none shared', () => {
-    const total = ['standard.verdict', 'standard.finance', 'standard.action'].reduce((n, k) => n + schemaStats(k, GENERATION_SCHEMAS[k as keyof typeof GENERATION_SCHEMAS]).result.properties, 0);
-    expect(total).toBeLessThanOrEqual(48);
+  it('the whole standard report needs ≤ 52 properties across four parts, none shared', () => {
+    const total = ['standard.verdict', 'standard.finance', 'standard.action', 'standard.plan'].reduce((n, k) => n + schemaStats(k, GENERATION_SCHEMAS[k as keyof typeof GENERATION_SCHEMAS]).result.properties, 0);
+    expect(total).toBeLessThanOrEqual(52);
+    expect(schemaStats('plan', GENERATION_SCHEMAS['standard.plan']).result.properties).toBe(4);
+    expect(schemaStats('dplan', GENERATION_SCHEMAS['detailed.plan']).result.properties).toBe(1);
   });
 
   it('the application model is never what is sent', () => {
@@ -74,7 +76,7 @@ describe('The exact compose requests', () => {
   it('standard: three parallel requests, no tools, one small format each, shared context cached', async () => {
     const { bodies, gen } = captureClient();
     await expect(gen.composeStandard(brief, [], '', { tighten: 0 })).rejects.toBeInstanceOf(GenerationRequestError);
-    expect(bodies).toHaveLength(3);
+    expect(bodies).toHaveLength(4);
     for (const b of bodies) {
       expect(b.tools).toBeUndefined();
       const oc = b.output_config as { effort: string; format: { type: string; schema: Record<string, unknown> } };
@@ -85,13 +87,19 @@ describe('The exact compose requests', () => {
       expect(content[0].cache_control).toEqual({ type: 'ephemeral' });
       expect(content[0].text).toContain('Order reference: TEST');
     }
-    expect(bodies.map((b) => Object.keys(((b.output_config as { format: { schema: { properties: object } } }).format.schema.properties))[0])).toEqual(['title', 'finance_known', 'risks']);
+    expect(bodies.map((b) => Object.keys(((b.output_config as { format: { schema: { properties: object } } }).format.schema.properties))[0])).toEqual(['title', 'finance_known', 'risks', 'week_actions']);
   });
 
-  it('detailed: six requests covering the nine sections', async () => {
+  it('detailed: six requests covering the nine sections, plus one plan expansion when the standard report has a plan', async () => {
     const { bodies, gen } = captureClient();
     await expect(gen.composeDetailed(brief, [], '', null)).rejects.toBeInstanceOf(GenerationRequestError);
     expect(bodies).toHaveLength(6);
+    bodies.length = 0;
+    const std = (await import('../netlify/lib/research')).stubStandardReport(brief);
+    await expect(gen.composeDetailed(brief, [], '', std)).rejects.toBeInstanceOf(GenerationRequestError);
+    expect(bodies).toHaveLength(7);
+    const planBody = bodies.find((b) => JSON.stringify((b.output_config as { format: unknown }).format).includes('week_expansions'))!;
+    expect(String((planBody.messages as { content: { text: string }[] }[])[0].content[1].text)).toContain('Week 1 listen');
     expect(DETAILED_SECTION_GROUPS.flat()).toHaveLength(9);
     for (const b of bodies) expect(b.tools).toBeUndefined();
   });
@@ -104,7 +112,7 @@ const research: ResearchSource[] = [
   { url: 'https://example.org/b', title: null, publisher: null, page_age: null, snippet: null, claim_type: 'forecast' },
 ];
 
-function parts(over: { verdict?: Partial<StandardParts['verdict']>; finance?: Partial<StandardParts['finance']>; action?: Partial<StandardParts['action']> } = {}): StandardParts {
+function parts(over: { verdict?: Partial<StandardParts['verdict']>; finance?: Partial<StandardParts['finance']>; action?: Partial<StandardParts['action']>; plan?: Partial<StandardParts['plan']> } = {}): StandardParts {
   const claims = { claim_texts: [] as string[], claim_kinds: [] as string[], claim_confidences: [] as string[], claim_source_ids: [] as number[][] };
   return {
     verdict: GENERATION_SCHEMAS['standard.verdict'].parse({
@@ -128,6 +136,13 @@ function parts(over: { verdict?: Partial<StandardParts['verdict']>; finance?: Pa
       chart_labels: ['2022', '2023', '2024'], chart_values: [10, 12, 14], chart_source_ids: [1, 1, 9],
       ...claims,
       ...over.finance,
+    }),
+    plan: GENERATION_SCHEMAS['standard.plan'].parse({
+      week_actions: ['Interview 10 owners of anxious dogs at two parks', 'Choose the one grooming package to offer', 'Take 20 deposit-backed bookings from a hired van', 'Compare bookings with the threshold and decide'],
+      week_measures: ['Number who describe salon stress unprompted', 'One package with price written down', 'Deposits paid', 'Bookings versus 12'],
+      week_details: ['Fewer than 5 means the problem is weaker than assumed.', 'Two packages means the test is unreadable.', 'The deposits are the demand signal.', 'Under the threshold means refine the niche before buying a van.'],
+      plan_caveat: '',
+      ...over.plan,
     }),
     action: GENERATION_SCHEMAS['standard.action'].parse({
       risks: ['Van breakdown', 'Seasonal demand', 'Pricing too low', 'Fourth risk dropped'], risk_validations: ['Quote breakdown cover', 'Check winter bookings'],
@@ -226,7 +241,7 @@ describe('Mapping part outputs to the application model', () => {
       source_ids_used: [2], source_uses: ['pricing'], limitations: [],
       ...claims,
     });
-    const { report, diagnostics } = mapDetailedParts({ sections: [first, second, GENERATION_SCHEMAS['detailed.sections'].parse({ ...empty(1), ...empty(2), ...claims })], summary }, research);
+    const { report, diagnostics } = mapDetailedParts({ sections: [first, second, GENERATION_SCHEMAS['detailed.sections'].parse({ ...empty(1), ...empty(2), ...claims })], summary, plan: null }, research);
     expect(DetailedReportSchema.safeParse(report).success).toBe(true);
     expect(report.sections.map((s) => s.id)).toHaveLength(9);
     const comp = report.sections.find((s) => s.id === 'competitors')!;
@@ -290,7 +305,7 @@ function grammarRejectingClient(opts: { rejectFallbackOnce?: boolean } = {}) {
   };
   const sampleFor = (props: Record<string, { type?: string; items?: { type?: string } }>) => {
     const o: Record<string, unknown> = {};
-    const special: Record<string, unknown> = { verdict: 'Worth testing', scores: [3, 3, 3, 3, 3], chart_kind: 'none', finance_known: [true, true, true, true, true, true], finance_values: [10, 2, 100, 5, 10, 20], risks: ['a', 'b', 'c'], improvements: ['a', 'b', 'c', 'd', 'e'] };
+    const special: Record<string, unknown> = { verdict: 'Worth testing', scores: [3, 3, 3, 3, 3], chart_kind: 'none', finance_known: [true, true, true, true, true, true], finance_values: [10, 2, 100, 5, 10, 20], risks: ['a', 'b', 'c'], improvements: ['a', 'b', 'c', 'd', 'e'], week_actions: ['a', 'b', 'c', 'd'], week_measures: ['a', 'b', 'c', 'd'], week_details: ['a', 'b', 'c', 'd'] };
     for (const [p, def] of Object.entries(props)) o[p] = p in special ? special[p] : def.type === 'string' ? `${p} text` : def.type === 'number' ? 100 : def.type === 'boolean' ? true : [];
     return o;
   };
@@ -316,22 +331,22 @@ describe('Grammar fallback', () => {
   it('a part rejected as too large is regenerated without a grammar and validated; the report still builds', async () => {
     const { bodies, gen } = grammarRejectingClient();
     const out = await gen.composeStandard(brief, research, 'notes', { tighten: 0 });
-    expect(out.fallbacks).toEqual(['standard.verdict', 'standard.finance', 'standard.action']);
+    expect(out.fallbacks).toEqual(['standard.verdict', 'standard.finance', 'standard.action', 'standard.plan']);
     expect(StandardReportSchema.safeParse(out.report).success).toBe(true);
     expect(out.report.verdict.label).toBe('Worth testing');
-    // 3 grammar attempts + 3 fallbacks; fallbacks carry no format and quote the schema.
-    expect(bodies).toHaveLength(6);
+    // 4 grammar attempts + 4 fallbacks; fallbacks carry no format and quote the schema.
+    expect(bodies).toHaveLength(8);
     const fallbacks = bodies.filter((b) => !(b.output_config as { format?: unknown }).format);
-    expect(fallbacks).toHaveLength(3);
+    expect(fallbacks).toHaveLength(4);
     for (const b of fallbacks) expect(String((b.messages as { content: { text: string }[] }[])[0].content[1].text)).toContain('"additionalProperties":false');
-    expect(out.usage.input_tokens).toBe(30);
+    expect(out.usage.input_tokens).toBe(40);
   });
 
   it('an invalid fallback answer is retried once with the validation errors', async () => {
     const { bodies, gen } = grammarRejectingClient({ rejectFallbackOnce: true });
     const out = await gen.composeStandard(brief, research, 'notes', { tighten: 0 });
-    expect(out.fallbacks).toHaveLength(3);
-    expect(bodies).toHaveLength(7);
+    expect(out.fallbacks).toHaveLength(4);
+    expect(bodies).toHaveLength(9);
     const retry = bodies.find((b) => String((b.messages as { content: { text: string }[] }[])[0].content[1].text).includes('previous answer was rejected'));
     expect(retry).toBeDefined();
   });

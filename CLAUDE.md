@@ -17,13 +17,27 @@ downloadable PDF. No customer account exists or is planned.
   Detailed Report Upgrade £34 **additional** (3400 GBP; £51 combined). Never
   hard-code prices in copy; always say the upgrade is additional and never
   imply £34 is a total. `UPGRADE_INCLUDES` lists what the upgrade adds.
-- **Report:** header with the idea readiness score out of 100, evidence
-  confidence, strongest supported opportunity and next action; market and
-  execution factor cards with bars; criteria radar; market chart (evidence
-  only, else labelled scenario or data gap); financial scenarios computed in
-  code; risks; recommendations (action, purpose, measure); the first test;
-  sources and limitations; locked previews of the detailed sections; the
-  consultation line with a clickable support@inovantage.co.uk.
+- **Report:** header with the idea readiness score out of 100, source
+  confidence and assessment coverage (two separate facts, see Scoring),
+  strongest supported opportunity and next action; market and execution
+  factor cards with bars; criteria radar; market chart (evidence only, else
+  labelled scenario or data gap); financial scenarios computed in code;
+  risks; the illustrated four-week journey (see Journey); recommendations
+  (action, purpose, measure); the first test; sources and limitations;
+  locked previews of the detailed sections; the consultation line with a
+  clickable support@inovantage.co.uk.
+- **Journey:** "Your first four weeks in action" (`src/config/journey.ts`):
+  Week 1 Listen, 2 Select, 3 Test, 4 Learn, each with one action and one
+  measure the model writes within editorial limits, and a caveat for
+  approvals, safety or long sales cycles. It is a suggested plan, labelled
+  `PLAN_CAVEAT`, never a launch schedule, and never promises sales, demand
+  or a score change. The artwork is original programmatic SVG from
+  `SCENES`, chosen by `sceneFamilyFor(industry, revenueModel)` from the
+  validated submission metadata, never from model text; the model never
+  outputs SVG, HTML or layout. Online the milestones are real buttons
+  (`aria-expanded`/`aria-controls`, Enter and Space, visible focus, reduced
+  motion respected); there is no completion tracking because nothing
+  persists it securely. Reports without a validated `plan` omit the section.
 - **Delivery:** a private report page (interactive web report + PDF download)
   and an email with the PDF attached. No turnaround promise anywhere: use
   `DELIVERY_COPY` ("We'll email you when your report is ready").
@@ -181,10 +195,21 @@ Read `docs/BACKEND.md` before touching `netlify/` or `supabase/`.
   overall "Idea readiness score" as the weighted mean computed in code.
   Insufficient criteria are excluded, never zero; the overall score is
   withheld ("Assessment incomplete") below six criteria or 60% of the
-  weight. No floors, inflation or purchase-driven adjustment, ever.
-  `src/config/headline.ts` derives the header fields (band, confidence,
-  strongest supported opportunity, next action) from report data for both
-  the web report and the PDF; keep them reading the same fields.
+  weight. No floors, inflation, remapping or purchase-driven adjustment,
+  ever; a low score is framed constructively (`readinessFraming`, "What
+  could strengthen this idea") under `SCORE_DISCLAIMER` ("A directional
+  assessment of the idea in its current form, not a probability of business
+  success."). Two separate facts sit beside the score: **source
+  confidence** (`sourceConfidence`: how many retrievable sources and how
+  well dated, attributed and located) and **assessment coverage**
+  (`assessmentCoverage`: how many of the nine criteria rest on evidence,
+  assumption or are not assessed). Never merge them into one label.
+  `src/config/headline.ts` derives the header fields (band, sources,
+  coverage, framing, strongest supported opportunity, next action) from
+  report data for both the web report and the PDF; keep them reading the
+  same fields so counts match online and in print. Labels and badges are
+  laid out by measurement (flex-wrap online, `labelledChip` in `pdf.ts`),
+  never at a fixed offset, so long labels wrap instead of overlapping.
 - **Reports.** `netlify/lib/report-schema.ts` holds the Zod schemas with
   editorial limits (nine scorecard items, recommendations with action,
   purpose and measure); it is the application model and is **never sent to

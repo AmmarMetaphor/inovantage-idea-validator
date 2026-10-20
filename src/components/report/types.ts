@@ -49,6 +49,20 @@ export interface Chart {
   note: string;
 }
 
+export interface PlanWeek {
+  week: number;
+  phase: 'listen' | 'select' | 'test' | 'learn';
+  action: string;
+  measure: string;
+  detail: string;
+}
+
+export interface Plan {
+  weeks: PlanWeek[];
+  caveat: string;
+  scene_family: 'retail' | 'software' | 'services' | 'hospitality' | 'generic';
+}
+
 export interface StandardReport {
   title: string;
   idea_summary: string;
@@ -63,6 +77,8 @@ export interface StandardReport {
   sources: Source[];
   limitations: string[];
   claims: Claim[];
+  /** Absent on reports generated before the plan existed; the section is then omitted. */
+  plan?: Plan;
 }
 
 export interface DetailedReport {
@@ -73,4 +89,5 @@ export interface DetailedReport {
   sources: Source[];
   limitations: string[];
   claims: Claim[];
+  plan?: Plan & { expansions: string[] };
 }

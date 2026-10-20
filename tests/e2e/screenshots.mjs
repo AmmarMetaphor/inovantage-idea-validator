@@ -127,6 +127,28 @@ for (const [name, viewport] of [['mobile', { width: 390, height: 844 }], ['deskt
   await page.keyboard.press('Enter');
   const expanded = await page.locator('.factor__head').first().getAttribute('aria-expanded');
   if (expanded !== 'true') { console.error('keyboard did not expand the factor row'); process.exitCode = 1; }
+  // Four-week journey: real buttons, Enter and Space toggle, aria-controls points at the panel.
+  const journey = page.locator('#plan');
+  await journey.scrollIntoViewIfNeeded();
+  const milestones = await page.locator('#plan .milestone').count();
+  if (milestones !== 4) { console.error(`expected 4 milestones, found ${milestones}`); process.exitCode = 1; }
+  const toggle = page.locator('.milestone__toggle').first();
+  await toggle.focus();
+  const panelId = await toggle.getAttribute('aria-controls');
+  const settled = async (value) => {
+    try { await page.waitForSelector(`#plan li.milestone:first-of-type .milestone__toggle[aria-expanded="${value}"]`, { timeout: 2000, state: 'attached' }); return true; } catch (e) { console.error(`milestone toggle did not reach aria-expanded=${value}: ${e.message.split('\n')[0]}`); return false; }
+  };
+  await page.keyboard.press('Enter');
+  const openByEnter = (await settled('true')) && (await page.locator(`#${panelId}`).isVisible());
+  await page.keyboard.press('Space');
+  const closedBySpace = (await settled('false')) && !(await page.locator(`#${panelId}`).isVisible());
+  if (!openByEnter || !closedBySpace) { console.error(`journey toggle keyboard: enter=${openByEnter} space=${closedBySpace}`); process.exitCode = 1; }
+  await page.keyboard.press('Space');
+  await page.locator('.milestone__toggle').nth(2).click();
+  // The sticky site header would be stitched into a tall element capture; unstick it for the shot.
+  await page.addStyleTag({ content: '.site-header { position: static !important; }' });
+  await journey.screenshot({ path: join(out, `${name}-journey.png`) });
+  shots.push(join(out, `${name}-journey.png`));
   const overflow = await page.evaluate(() => {
     const cw = document.documentElement.clientWidth;
     if (document.documentElement.scrollWidth <= cw) return null;

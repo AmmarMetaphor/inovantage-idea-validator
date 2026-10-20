@@ -1,4 +1,5 @@
 import type { FinancialResult } from '@/lib/api';
+import { Journey } from './Journey';
 import { FinancialTable, SectionTitle, Sources } from './ReportParts';
 import type { DetailedReport } from './types';
 
@@ -21,6 +22,7 @@ export function DetailedReportView({ report, fin, generatedAt }: { report: Detai
         <ul>
           <li><a href="#d-summary">Summary</a></li>
           {report.sections.map((s) => <li key={s.id}><a href={`#d-${s.id}`}>{SECTION_NAV[s.id] ?? s.heading}</a></li>)}
+          {report.plan && <li><a href="#plan">Four weeks</a></li>}
         </ul>
       </nav>
       <header className="web-report__head" id="d-summary">
@@ -46,6 +48,7 @@ export function DetailedReportView({ report, fin, generatedAt }: { report: Detai
             </div>
           )}
           {s.id === 'financial_scenarios' && <FinancialTable fin={fin} />}
+          {s.id === 'roadmap' && report.plan && <Journey plan={report.plan} expansions={report.plan.expansions} />}
           {s.id === 'sensitivity_risks' && report.sensitivity.length > 0 && (
             <table className="data-table">
               <caption className="visually-hidden">Sensitivity</caption>
