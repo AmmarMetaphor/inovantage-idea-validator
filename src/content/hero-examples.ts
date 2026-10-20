@@ -43,7 +43,7 @@ export const HERO_EXAMPLES: Record<HeroExampleId, HeroExample> = {
       { who: 'Caterers', label: 'Caterers', need: 'Need spices and rice in bulk at a reliable price.', tone: 'navy' },
     ],
     nextSteps: ['Validate demand with twelve household conversations', 'Refine the offer to fifteen products at one price', 'Plan a Saturday stall with a pre-order list'],
-    stepsShort: ['Listen', 'Stall test', 'Refine'],
+    stepsShort: ['Listen', 'Test', 'Refine'],
     weeks: ['Ask twelve households which brands they cannot buy locally.', 'Choose fifteen products and set one shelf price.', 'Run a Saturday stall with a pre-order list.', 'Compare pre-orders with the threshold and decide.'],
   },
   service: {
@@ -77,7 +77,7 @@ export const HERO_EXAMPLES: Record<HeroExampleId, HeroExample> = {
       { who: 'Patients', label: 'Patients', need: 'Would take an earlier slot if offered quickly.', tone: 'navy' },
     ],
     nextSteps: ['Validate the pain with eight manager interviews', 'Refine a three-screen prototype', 'Plan five usability sessions with a paid pilot ask'],
-    stepsShort: ['Interview', 'Prototype', 'Refine'],
+    stepsShort: ['Listen', 'Prototype', 'Refine'],
     weeks: ['Interview eight practice managers about cancellations.', 'Sketch a three-screen prototype and one price.', 'Run five usability sessions and ask for a paid pilot.', 'Compare pilot commitments with the threshold and decide.'],
   },
 };

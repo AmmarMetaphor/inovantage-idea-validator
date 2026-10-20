@@ -368,6 +368,7 @@
   align-items: center;
   gap: 0.35rem;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .panel__steps li + li::before {
@@ -438,7 +439,7 @@
   }
   .panel--insights { left: 0; top: 10%; width: 36%; }
   .panel--potential { right: 0; top: 10%; width: 38%; }
-  .panel--steps { left: 0; bottom: 10%; width: 44%; }
+  .panel--steps { left: 0; bottom: 10%; width: 46%; }
   .panel--customers { right: 0; bottom: 10%; width: 40%; }
   .panel__steps,
   .panel__people { flex-wrap: nowrap; }
