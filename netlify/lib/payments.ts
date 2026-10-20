@@ -46,8 +46,21 @@ export interface PaymentGateway {
     idempotencyKey: string;
   }): Promise<{ id: string; url: string; expiresAtUnix: number }>;
   retrieveSession(sessionId: string): Promise<VerifiedSession | null>;
+  /** Expire an open session so a stale checkout URL can no longer be paid. Best effort; never throws. */
+  expireSession(sessionId: string): Promise<void>;
   /** Throws on an invalid signature. */
   verifyWebhook(rawBody: string, signatureHeader: string | null): Promise<WebhookEventLite>;
+}
+
+/** The path Stripe must POST to on the deployed site (netlify.toml maps /api/* to the functions). */
+export const STRIPE_WEBHOOK_PATH = '/api/stripe-webhook';
+
+/** Events the webhook handler acts on; everything else is acknowledged and ignored. */
+export const STRIPE_WEBHOOK_EVENTS = ['checkout.session.completed', 'checkout.session.async_payment_succeeded', 'checkout.session.async_payment_failed', 'checkout.session.expired'] as const;
+
+/** The API version the installed SDK pins; set the webhook endpoint to the same version in the dashboard. */
+export function stripeApiVersion(): string {
+  return String((new Stripe('sk_test_placeholder') as unknown as { getApiField(k: string): unknown }).getApiField('version'));
 }
 
 export class WebhookSignatureError extends Error {
@@ -59,9 +72,9 @@ export class WebhookSignatureError extends Error {
 
 export class StripeGateway implements PaymentGateway {
   private stripe: Stripe;
-  constructor(secretKey: string, private webhookSecret: string, private hash: (s: string) => string) {
+  constructor(secretKey: string, private webhookSecret: string, private hash: (s: string) => string, client?: Stripe) {
     // No apiVersion override: the SDK pins the API version it was built for.
-    this.stripe = new Stripe(secretKey, { maxNetworkRetries: 2, timeout: 8000 });
+    this.stripe = client ?? new Stripe(secretKey, { maxNetworkRetries: 2, timeout: 8000 });
   }
 
 
@@ -80,6 +93,10 @@ export class StripeGateway implements PaymentGateway {
     const session = await this.stripe.checkout.sessions.create(
       {
         mode: 'payment',
+        // Card only for now: no delayed-notification methods, so payment_status
+        // is 'paid' on checkout.session.completed and the async_* events do
+        // not occur. Widen deliberately later; the webhook already handles them.
+        payment_method_types: ['card'],
         line_items: [{ price: input.priceId, quantity: 1 }],
         customer_email: input.customerEmail,
         client_reference_id: input.orderId,
@@ -105,6 +122,15 @@ export class StripeGateway implements PaymentGateway {
       throw err;
     }
     return toVerified(s);
+  }
+
+  async expireSession(sessionId: string) {
+    try {
+      await this.stripe.checkout.sessions.expire(sessionId);
+    } catch {
+      // Already expired, completed or unknown: nothing to do. The server-side
+      // session check in fulfil.ts refuses any session not attached to the order.
+    }
   }
 
   async verifyWebhook(rawBody: string, signatureHeader: string | null) {

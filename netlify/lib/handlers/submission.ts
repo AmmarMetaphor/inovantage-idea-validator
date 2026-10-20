@@ -3,11 +3,11 @@ import { hashIp, normaliseEmail, sha256Hex, shortRef } from '../crypto';
 import type { Deps } from '../deps';
 import { clientIp, HttpError, isObject, json, readJson, requireMethod } from '../http';
 import { ANSWERS_VERSION } from '../../../src/questionnaire/schema';
+import { openCheckoutSession } from '../checkout';
 import { MAX_BODY_BYTES, validateSubmission } from '../validation';
 import { enforceRateLimit } from './ratelimit';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const CHECKOUT_TTL_SECONDS = 30 * 60;
 const SUBMISSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 /** POST /api/create-submission  { answers, website? } → { submissionId } */
@@ -71,6 +71,7 @@ export async function createCheckout(req: Request, deps: Deps, contextIp?: strin
   const priceId = env.stripePriceIds.standard;
   await payments.verifyPrice(priceId, { amountMinor: product.amountMinor, currency: product.currency });
 
+  // Pilot submissions never pay: they are fulfilled only through the owner page.
   if (submission.source === 'pilot') throw new HttpError(409, 'pilot_submission', 'Pilot submissions are not paid through checkout.');
   const { order } = await deps.db.createOrder({
     submission_id: submission.id,
@@ -88,19 +89,7 @@ export async function createCheckout(req: Request, deps: Deps, contextIp?: strin
     throw new HttpError(409, 'order_not_pending', `This order is ${order.status}.`);
   }
 
-  const nowUnix = Math.floor(deps.now().getTime() / 1000);
-  const session = await payments.createCheckoutSession({
-    priceId,
-    orderId: order.id,
-    customerEmail: submission.email,
-    successUrl: `${env.appUrl}/checkout/return?session_id={CHECKOUT_SESSION_ID}`,
-    cancelUrl: `${env.appUrl}/checkout?status=cancelled`,
-    expiresAtUnix: nowUnix + CHECKOUT_TTL_SECONDS,
-    idempotencyKey: `checkout:${order.id}:${order.stripe_checkout_session_id ?? 'first'}`,
-  });
-  await deps.db.attachCheckoutSession(order.id, session.id, new Date(session.expiresAtUnix * 1000).toISOString());
-  if (order.status === 'expired') await deps.db.setOrderStatus(order.id, 'pending_payment');
+  const session = await openCheckoutSession({ db: deps.db, payments, log: deps.log, now: deps.now, appUrl: env.appUrl }, order, product, priceId, '/checkout?status=cancelled');
   await deps.db.setSubmissionStatus(submission.id, 'ordered');
-  deps.log.info('checkout.created', { order_id: order.id });
-  return json({ checkoutUrl: session.url, orderRef: shortRef(order.id) });
+  return json({ checkoutUrl: session.url, orderRef: shortRef(order.id), reused: session.reused });
 }

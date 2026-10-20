@@ -3,6 +3,7 @@ import { hashIp, isValidTokenShape, maskEmail, sha256Hex, shortRef } from '../cr
 import type { Deps } from '../deps';
 import { FULFILLABLE, type Job, type Order, type Report, type Submission } from '../db/types';
 import { recoveryEmail } from '../emails';
+import { openCheckoutSession } from '../checkout';
 import { fulfilCheckoutSession } from '../fulfil';
 import { clientIp, HttpError, isObject, json, readJson, requireMethod } from '../http';
 import { assertPilotDeliveryAllowed } from '../jobs';
@@ -206,8 +207,6 @@ export async function reportDownload(req: Request, deps: Deps, contextIp?: strin
    Upgrade purchase
 --------------------------------------------------------------------------- */
 
-const CHECKOUT_TTL_SECONDS = 30 * 60;
-
 /**
  * POST /api/create-upgrade-checkout { token } → { checkoutUrl } (Stripe) or
  * { reportPath } (pilot orders with an owner session). Idempotent per
@@ -237,19 +236,8 @@ export async function createUpgradeCheckout(req: Request, deps: Deps, contextIp?
   await payments.verifyPrice(priceId, { amountMinor: product.amountMinor, currency: product.currency });
   const { order } = await deps.db.createOrder({ submission_id: ent.submission.id, email: ent.standard.email, email_normalised: ent.standard.email_normalised, amount_minor: product.amountMinor, currency: product.currency, stripe_price_id: priceId, source: 'stripe', product: 'upgrade', parent_order_id: ent.standard.id });
   if (order.status !== 'pending_payment' && order.status !== 'expired') throw new HttpError(409, 'already_purchased', 'The detailed report has already been purchased.');
-  const session = await payments.createCheckoutSession({
-    priceId,
-    orderId: order.id,
-    customerEmail: ent.standard.email,
-    successUrl: `${deps.env.appUrl}/checkout/return?session_id={CHECKOUT_SESSION_ID}`,
-    cancelUrl: `${deps.env.appUrl}/checkout?status=cancelled&upgrade=1`,
-    expiresAtUnix: Math.floor(now.getTime() / 1000) + CHECKOUT_TTL_SECONDS,
-    idempotencyKey: `checkout:${order.id}:${order.stripe_checkout_session_id ?? 'first'}`,
-  });
-  await deps.db.attachCheckoutSession(order.id, session.id, new Date(session.expiresAtUnix * 1000).toISOString());
-  if (order.status === 'expired') await deps.db.setOrderStatus(order.id, 'pending_payment');
-  deps.log.info('upgrade.checkout_created', { order_id: order.id });
-  return json({ checkoutUrl: session.url });
+  const session = await openCheckoutSession({ db: deps.db, payments, log: deps.log, now: deps.now, appUrl: deps.env.appUrl }, order, product, priceId, '/checkout?status=cancelled&upgrade=1');
+  return json({ checkoutUrl: session.url, reused: session.reused });
 }
 
 /* ---------------------------------------------------------------------------

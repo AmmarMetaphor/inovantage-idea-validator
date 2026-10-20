@@ -158,7 +158,11 @@ Read `docs/BACKEND.md` before touching `netlify/` or `supabase/`.
 - **Trust boundaries.** The browser never gets a Supabase key, never sets a
   price, and never triggers generation. Only a verified Stripe session
   (webhook, or server-side retrieval on return) can mark an order paid, and
-  that path creates the job row before acknowledging. All customer-facing
+  that path creates the job row before acknowledging. Checkout sessions are
+  card-only `mode=payment`, one open session per order
+  (`netlify/lib/checkout.ts` reuses it and expires a superseded one); the
+  webhook path is `/api/stripe-webhook` with the four
+  `checkout.session.*` events and snapshot payloads (see `docs/BACKEND.md`). All customer-facing
   reads require a 256-bit access token (stored hashed, expiring) sent in a
   POST body.
 - **Jobs.** `claim_job` is atomic; stages `confirm → research → compose →

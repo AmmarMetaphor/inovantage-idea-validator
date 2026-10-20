@@ -131,7 +131,7 @@ export function OwnerPilotPage() {
             <dd>{session.context}</dd>
           </dl>
           <p className="muted small">
-            Starting a pilot opens the real six-step questionnaire with the pilot address pre-filled. On the review page the
+            Starting a pilot opens the real eight-question questionnaire with the pilot address pre-filled. On the review page the
             button reads “Create pilot report (no payment)”. You will then land on the private report page; the confirmation
             and report emails go to the pilot address. On that page, while signed in here, the upgrade button creates a
             pilot detailed report without Stripe.

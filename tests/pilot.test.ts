@@ -101,7 +101,11 @@ describe('Owner login and session', () => {
     const { cookieHeader } = await login(h);
     const ok = await ownerSession(get('/api/owner-session', { cookie: cookieHeader }), h.deps);
     expect(((await ok.json()) as { authenticated: boolean }).authenticated).toBe(true);
-    const forged = await ownerSession(get('/api/owner-session', { cookie: `${OWNER_COOKIE}=${cookieHeader.split('=')[1].replace(/.$/, 'A')}` }), h.deps);
+    // The last base64url character of a 32-byte signature carries only two
+    // bits, so replace it with a different valid character rather than a fixed one.
+    const token = cookieHeader.split('=')[1];
+    const forgedToken = token.slice(0, -1) + (token.endsWith('A') ? 'Q' : 'A');
+    const forged = await ownerSession(get('/api/owner-session', { cookie: `${OWNER_COOKIE}=${forgedToken}` }), h.deps);
     expect(((await forged.json()) as { authenticated: boolean }).authenticated).toBe(false);
     h.clock.advance(3 * 3_600_000);
     const expired = await ownerSession(get('/api/owner-session', { cookie: cookieHeader }), h.deps);

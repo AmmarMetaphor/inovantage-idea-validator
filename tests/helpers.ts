@@ -66,6 +66,12 @@ export class FakeGateway implements PaymentGateway {
     const s = this.sessions.get(sessionId);
     return s ? { ...s, lineItems: s.lineItems.map((l) => ({ ...l })) } : null;
   }
+  expired: string[] = [];
+  async expireSession(sessionId: string) {
+    this.expired.push(sessionId);
+    const s = this.sessions.get(sessionId);
+    if (s && s.status === 'open') s.status = 'expired';
+  }
   async verifyWebhook(rawBody: string, signatureHeader: string | null): Promise<WebhookEventLite> {
     if (!signatureHeader) throw new WebhookSignatureError('missing');
     let event: Stripe.Event;

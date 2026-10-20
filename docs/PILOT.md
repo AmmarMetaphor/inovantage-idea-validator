@@ -63,7 +63,7 @@ you are testing on ("Branch deploys" or "Deploy previews" for a test branch;
 | `OWNER_ALERT_EMAIL` | `support@metaphorconsultants.com` | Optional: dead-job alerts. |
 
 Not needed for the pilot: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
-`STRIPE_PRICE_ID`. Without them `/api/create-checkout` and
+`STRIPE_PRICE_ID_STANDARD`, `STRIPE_PRICE_ID_UPGRADE`. Without them `/api/create-checkout` and
 `/api/stripe-webhook` answer 503 `not_configured` and change nothing.
 
 Delivery allowlist: `support@metaphorconsultants.com` is built in. Only set

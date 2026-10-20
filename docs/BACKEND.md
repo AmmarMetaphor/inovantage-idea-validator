@@ -65,38 +65,95 @@ exposed; customers see an 8-character short reference only.
 
 ## 2. Stripe
 
-1. Stay in **test mode** while developing (toggle in the Stripe dashboard).
-   Products → add two products, each with a **one-time** GBP price:
+Environment variables (exact names, all read in `netlify/lib/env.ts`):
+
+| Variable | What it is |
+| --- | --- |
+| `STRIPE_SECRET_KEY` | Secret key (`sk_test_…` while testing; `sk_live_…` only at launch) |
+| `STRIPE_WEBHOOK_SECRET` | Signing secret of the webhook endpoint below (`whsec_…`) |
+| `STRIPE_PRICE_ID_STANDARD` | Price ID of the £17 one-time Price (`price_…`) |
+| `STRIPE_PRICE_ID_UPGRADE` | Price ID of the £34 one-time Price (`price_…`) |
+| `APP_URL` | Public origin used for success/cancel URLs, e.g. `https://inovantage-idea-validator.netlify.app` (unset: `DEPLOY_PRIME_URL`, then `URL`) |
+
+Prices live in `src/config/product.ts` (1700 and 3400 GBP); the browser
+never sends an amount. The server re-reads each Price at checkout time and
+refuses to create a session if its amount, currency, type (one-time) or
+active flag differs.
+
+### Dashboard setup (test mode)
+
+1. **Products.** Products → add two products, each with one **one-time** GBP
+   price:
 
    | Product name | Price | Variable for its Price ID | Server expects |
    | --- | --- | --- | --- |
    | Idea Validation Report | £17.00 | `STRIPE_PRICE_ID_STANDARD` | 1700 GBP |
    | Detailed Report Upgrade | £34.00 | `STRIPE_PRICE_ID_UPGRADE` | 3400 GBP |
 
-   The server re-reads each Price at checkout time and refuses to create a
-   session if the amount or currency differs from `src/config/product.ts`.
-   The upgrade is additional (£51 combined); the UI says so everywhere.
+   A Stripe Price is immutable. If a 3500 GBP Price exists from the earlier
+   £35 configuration, create a new 3400 Price on the same Product, point
+   `STRIPE_PRICE_ID_UPGRADE` at it and archive the old one. Until then the
+   upgrade checkout is refused (`verifyPrice` mismatch); nothing is charged.
 
-   **Price change (£35 → £34).** A Stripe Price is immutable. Create a new
-   Price of 3400 GBP on the upgrade Product in the Stripe dashboard (test
-   mode), set `STRIPE_PRICE_ID_UPGRADE` to the new `price_…` id, and archive
-   the old 3500 Price. Until the variable is updated, `verifyPrice` refuses
-   to create upgrade checkouts because the Price amount no longer matches
-   `PRODUCTS.upgrade.amountMinor`; nothing is charged at the old price.
-2. Developers → Webhooks → add an endpoint:
+2. **Webhook.** Developers → Webhooks → **Add destination** (or "Add
+   endpoint"):
 
-   ```
-   POST https://<your-site>/api/stripe-webhook
-   ```
+   - Endpoint URL: `https://<your-site>/api/stripe-webhook`; for the
+     production Netlify site that is
+     `https://inovantage-idea-validator.netlify.app/api/stripe-webhook`
+     (`netlify.toml` maps `/api/*` to the function `stripe-webhook`; the
+     path is fixed, the host is whatever Netlify serves the site on, so a
+     branch deploy needs its own endpoint while testing).
+   - Events to send, exactly these four:
+     `checkout.session.completed`,
+     `checkout.session.async_payment_succeeded`,
+     `checkout.session.async_payment_failed`,
+     `checkout.session.expired`.
+     Any other event is acknowledged and ignored.
+   - **Payload style: snapshot** (the classic full-object payload). The
+     handler reads `data.object.id` from the event; "thin" payloads do not
+     carry it.
+   - **API version:** the version pinned by the installed SDK. `GET
+     /api/health` reports it under `stripe.apiVersion` (the SDK sets no
+     override, so it is the SDK's own default). The handler only reads the
+     session id from the event and re-fetches the session with the SDK, so a
+     version mismatch on the endpoint does not break fulfilment, but keeping
+     them equal avoids surprises in the dashboard's event viewer.
+   - Copy the signing secret into `STRIPE_WEBHOOK_SECRET`.
 
-   Events: `checkout.session.completed`,
-   `checkout.session.async_payment_succeeded`,
-   `checkout.session.async_payment_failed`, `checkout.session.expired`.
-   Copy the signing secret (`whsec_…`) into `STRIPE_WEBHOOK_SECRET`.
-3. For local testing: `stripe listen --forward-to localhost:8888/api/stripe-webhook`
-   and use the printed `whsec_` as the local webhook secret.
+3. **Payment methods.** Sessions are created with
+   `payment_method_types: ['card']`, so no delayed-notification methods are
+   offered and `payment_status` is `paid` on `checkout.session.completed`.
+   The `async_payment_*` events are still handled for the day that changes.
 
-Fulfilment rules the code enforces:
+4. **Local testing:** `stripe listen --forward-to localhost:8888/api/stripe-webhook`
+   and use the printed `whsec_` as the local webhook secret. Test card
+   `4242 4242 4242 4242`, any future date, any CVC.
+
+### Checkout flow the code enforces
+
+- `POST /api/create-checkout { submissionId }` creates the order (unique per
+  submission and product) and a hosted Checkout Session (`mode=payment`)
+  carrying the order id in `client_reference_id`, `metadata.order_id` and
+  the payment intent metadata. The session expires after 60 minutes.
+- **One open session per order** (`netlify/lib/checkout.ts`): a repeat
+  request returns the existing open session's URL (`reused: true`); once it
+  has expired a new session is created and the superseded one is expired at
+  Stripe, so a stale URL can never be paid for an order that points at a
+  different session.
+- The upgrade (`POST /api/create-upgrade-checkout { token }`) requires a
+  valid report access token (the owner of that report), a paid standard
+  order for the same submission, and no existing paid upgrade order.
+- `cancel_url` returns to `/checkout?status=cancelled` (`&upgrade=1` for the
+  upgrade), where "Return to review" reopens the review page with the draft
+  answers still in the browser session.
+- `success_url` is `/checkout/return?session_id={CHECKOUT_SESSION_ID}`. The
+  page shows "Confirming your payment" at once and polls
+  `GET /api/checkout-result`, which never trusts the URL: the session is
+  retrieved from Stripe server-side and run through the same verification as
+  the webhook before anything is marked paid.
+
+Fulfilment rules the code enforces (`netlify/lib/fulfil.ts`):
 
 - Signature is verified on the raw request body (`req.text()`), never on parsed JSON.
 - Every event is written to `webhook_events` (unique per provider + event id)
@@ -108,12 +165,46 @@ Fulfilment rules the code enforces:
   order's amount and currency, and contain exactly one unit of the Price for
   the order's product (`STRIPE_PRICE_ID_STANDARD` or `STRIPE_PRICE_ID_UPGRADE`).
   An upgrade session is also rejected unless its parent standard order is paid.
+- `checkout.session.completed` with `payment_status` other than `paid` is
+  ignored (order stays pending); `checkout.session.async_payment_succeeded`
+  fulfils it later. `checkout.session.expired` and
+  `checkout.session.async_payment_failed` move a **pending** order to
+  `expired` (the customer can start a new checkout) and never touch a paid
+  order.
 - The order flips to paid with a conditional update (only from
-  `pending_payment`) and a unique payment-intent constraint.
-- The job row is created before the 200 is sent. If anything fails, the event
-  is marked `failed` and a 500 makes Stripe retry.
-- The browser's success redirect never fulfils by itself: `checkout-result`
-  retrieves the session from Stripe server-side and runs the same checks.
+  `pending_payment`) and a unique payment-intent constraint; the submission
+  becomes `paid`; the job row is created (unique per order) before the 200 is
+  sent and the background worker is invoked. Report generation never runs
+  inside the webhook. If anything fails, the event is marked `failed` and a
+  500 makes Stripe retry.
+- Emails are sent only by the job stages and checked against
+  `delivery_attempts`, so duplicate events or a second worker never send a
+  second confirmation or report email.
+- If the customer closes the browser after paying, the webhook alone fulfils
+  and the confirmation email carries the private link.
+
+### PILOT_MODE and the public checkout
+
+`PILOT_MODE` does not change the public checkout. A pilot order can only be
+created through `POST /api/pilot-order` behind the owner-page cookie, and
+`create-checkout` refuses any pilot submission. Public visitors always go
+through Stripe. To remove the payment bypass for launch, set
+`PILOT_MODE=false` (or delete it) and delete `PILOT_OWNER_PASSWORD` and
+`PILOT_SESSION_SECRET`: `/owner/pilot` and the pilot endpoints then answer
+503 and nothing can be fulfilled without a verified payment. `/api/health`
+shows `pilot.enabled: false`.
+
+### Launch checklist
+
+1. Test mode: run one real test-card purchase of the standard report and
+   one upgrade; check `webhook_events` shows `processed`, the order is
+   `paid` then `fulfilled`, exactly one job, and the two emails.
+2. Switch the dashboard to live mode, create the two live Prices, add the
+   live webhook endpoint (same URL, same four events, snapshot payload),
+   and set the live `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
+   `STRIPE_PRICE_ID_STANDARD`, `STRIPE_PRICE_ID_UPGRADE` in Netlify's
+   production context only.
+3. `PILOT_MODE=false`, `VITE_DEMO_MODE=false`, redeploy, open `/api/health`.
 
 ## 3. Anthropic
 

@@ -2,6 +2,7 @@
   GET /api/health — configuration readiness, names only, no values.
 */
 import { buildInfo, ConfigError, loadEnv, type EnvGroup } from '../lib/env';
+import { STRIPE_WEBHOOK_EVENTS, STRIPE_WEBHOOK_PATH, stripeApiVersion } from '../lib/payments';
 import { netlifyFunction } from '../lib/function';
 import { json } from '../lib/http';
 
@@ -40,6 +41,7 @@ export default netlifyFunction('health', async () => {
       checks: 'configuration presence only; no external connectivity is tested',
       context: process.env.CONTEXT ?? 'dev',
       build: buildInfo(),
+      stripe: { webhookPath: STRIPE_WEBHOOK_PATH, events: STRIPE_WEBHOOK_EVENTS, apiVersion: stripeApiVersion(), payloadFormat: 'snapshot' },
       generator: process.env.REPORT_GENERATOR ?? 'anthropic',
       configured,
       missing: [...missing],
